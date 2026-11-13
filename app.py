@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -22,6 +23,18 @@ if "samples" not in st.session_state:
     st.session_state.samples = []
 if "bt_conn" not in st.session_state:
     st.session_state.bt_conn = None
+if "gps_coords" not in st.session_state:
+    st.session_state.gps_coords = None
+if "last_city_text" not in st.session_state:
+    st.session_state.last_city_text = "Bengaluru"
+
+# Capture GPS coordinates returned by browser geolocation button via URL query params
+qp = st.query_params
+if "lat" in qp and "lon" in qp:
+    try:
+        st.session_state.gps_coords = (float(qp["lat"]), float(qp["lon"]))
+    except ValueError:
+        pass
 
 # ---------------- INDIAN CROP CATEGORIES & AGRONOMIC PROFILES ----------------
 INDIAN_CROPS = {
@@ -66,22 +79,17 @@ INDIAN_CROPS = {
 
 # ---------------- HELPER FUNCTIONS ----------------
 def recommended_spot_count(length_m: float, width_m: float) -> int:
-    """Scales checkpoint count smoothly with field area (5 to 35 spots)."""
     hectares = (length_m * width_m) / 10000.0
     spots = int(round(6.5 + 3.4 * math.sqrt(hectares)))
     return max(5, min(35, spots))
 
 
 def generate_serpentine_points(length_m: float, width_m: float, n_spots: int) -> np.ndarray:
-    """Generates exact n_spots arranged in an optimal zig-zag walking path across the field."""
     n = max(3, min(35, int(n_spots)))
     aspect = width_m / max(length_m, 1.0)
-    n_rows = int(round(math.sqrt(n * aspect)))
-    n_rows = max(2, min(n, n_rows))
-
+    n_rows = max(2, min(n, int(round(math.sqrt(n * aspect)))))
     base_cols, extra = divmod(n, n_rows)
     points = []
-
     for r in range(n_rows):
         cols_in_row = base_cols + (1 if r < extra else 0)
         y = width_m * (r + 0.5) / n_rows
@@ -90,12 +98,10 @@ def generate_serpentine_points(length_m: float, width_m: float, n_spots: int) ->
             row_xs.reverse()
         for x in row_xs:
             points.append([round(x, 1), round(y, 1)])
-
     return np.array(points, dtype=float)
 
 
 def format_runtime(liters: float, flow_lpm: float) -> str:
-    """Converts water volume (L) and flow rate (L/min) into readable hours & mins."""
     if liters <= 0 or flow_lpm <= 0:
         return "0 mins (Skip)"
     total_mins = int(round(liters / flow_lpm))
@@ -110,24 +116,32 @@ def format_runtime(liters: float, flow_lpm: float) -> str:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_live_weather(city_name: str):
-    """Fetches real-time weather & 24h rain forecast via Open-Meteo (no API key needed)."""
+def reverse_geocode_coords(lat: float, lon: float) -> str:
     try:
-        q = urllib.parse.quote(city_name.strip() or "Bengaluru")
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={q}&count=1&language=en&format=json"
-        req_geo = urllib.request.Request(geo_url, headers={"User-Agent": "SoilScoutAI/1.0"})
-        with urllib.request.urlopen(req_geo, timeout=5) as resp:
-            geo_data = json.loads(resp.read().decode("utf-8"))
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat:.5f}&lon={lon:.5f}&zoom=13"
+        req = urllib.request.Request(url, headers={"User-Agent": "SoilScoutAI/1.0 (precision-ag)"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        addr = data.get("address", {})
+        place = (
+            addr.get("village")
+            or addr.get("town")
+            or addr.get("suburb")
+            or addr.get("city")
+            or addr.get("county")
+            or "GPS Location"
+        )
+        state = addr.get("state", "")
+        return f"{place}, {state}".strip(", ")
+    except Exception:
+        return f"GPS ({lat:.3f}°N, {lon:.3f}°E)"
 
-        if not geo_data.get("results"):
-            return None
 
-        loc = geo_data["results"][0]
-        lat, lon = loc["latitude"], loc["longitude"]
-        resolved_name = f"{loc.get('name', city_name)}, {loc.get('admin1', loc.get('country', ''))}".strip(", ")
-
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_weather_by_coords(lat: float, lon: float, label: str):
+    try:
         wx_url = (
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat:.5f}&longitude={lon:.5f}"
             f"&current=temperature_2m,relative_humidity_2m,weather_code"
             f"&daily=precipitation_sum,precipitation_probability_max,temperature_2m_max"
             f"&timezone=auto&forecast_days=2"
@@ -146,7 +160,7 @@ def fetch_live_weather(city_name: str):
         temp_max = float(daily.get("temperature_2m_max", [temp_now])[0] or temp_now)
 
         return {
-            "location": resolved_name,
+            "location": label,
             "temp_now": temp_now,
             "rh_now": rh_now,
             "rain_mm": rain_mm,
@@ -157,8 +171,27 @@ def fetch_live_weather(city_name: str):
         return None
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_live_weather(city_name: str):
+    try:
+        q = urllib.parse.quote(city_name.strip() or "Bengaluru")
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={q}&count=1&language=en&format=json"
+        req_geo = urllib.request.Request(geo_url, headers={"User-Agent": "SoilScoutAI/1.0"})
+        with urllib.request.urlopen(req_geo, timeout=5) as resp:
+            geo_data = json.loads(resp.read().decode("utf-8"))
+
+        if not geo_data.get("results"):
+            return None
+
+        loc = geo_data["results"][0]
+        lat, lon = loc["latitude"], loc["longitude"]
+        resolved_name = f"{loc.get('name', city_name)}, {loc.get('admin1', loc.get('country', ''))}".strip(", ")
+        return fetch_weather_by_coords(lat, lon, resolved_name)
+    except Exception:
+        return None
+
+
 def evaluate_weather_advice(wx: dict | None):
-    """Determines irrigation multiplier and farmer advisory based on forecast."""
     if not wx:
         return 1.0, "info", "Offline Weather Mode", "Using sensor temperature/humidity only (100% baseline irrigation)."
 
@@ -198,7 +231,6 @@ def evaluate_weather_advice(wx: dict | None):
 
 def estimate_evapotranspiration_and_schedule(temp_c: float, rh: float, mean_moisture: float,
                                            texture, crop_cfg: dict, wx_data: dict | None):
-    """Calculates daily crop evapotranspiration (ETc in mm/day), dry-down rate, and Next Watering Day."""
     fc = getattr(texture, "field_capacity", 38.0)
     wp = getattr(texture, "wilting_point", 18.0)
     root_depth = crop_cfg["root_depth_m"]
@@ -254,7 +286,6 @@ def estimate_evapotranspiration_and_schedule(temp_c: float, rh: float, mean_mois
 
 
 def parse_bluetooth_log(raw_bytes: bytes, suggested_pts: np.ndarray, default_temp: float, default_rh: float):
-    """Smart parser for Serial Bluetooth Terminal logs (.txt or .csv)."""
     text = raw_bytes.decode("utf-8", errors="ignore")
     lines = text.splitlines()
     samples = []
@@ -311,7 +342,6 @@ def parse_bluetooth_log(raw_bytes: bytes, suggested_pts: np.ndarray, default_tem
 
 
 def draw_walking_map(length_m: float, width_m: float, points: np.ndarray):
-    """Generates a clean visual checkpoint & zig-zag route map."""
     fig, ax = plt.subplots(figsize=(9, 5.8), dpi=180)
     fig.patch.set_facecolor("#F8FAFC")
     ax.set_facecolor("#F1F8F4")
@@ -360,7 +390,6 @@ def draw_walking_map(length_m: float, width_m: float, points: np.ndarray):
 
 
 def extract_zone_summary(moisture: np.ndarray, cell_area_m2: float, texture, crop_cfg: dict, wx_multiplier: float):
-    """Calculates crop-specific zone areas, moisture thresholds, and weather-adjusted liters."""
     fc = getattr(texture, "field_capacity", 38.0)
     wp = getattr(texture, "wilting_point", 18.0)
     root_depth = crop_cfg["root_depth_m"]
@@ -396,14 +425,13 @@ def extract_zone_summary(moisture: np.ndarray, cell_area_m2: float, texture, cro
             "base_liters": base_liters,
             "liters": adj_liters,
         })
-    return summary, wp, fc, crit_thresh, warn_thresh, over_thresh
+    return summary, wp, fc, target_m, crit_thresh, warn_thresh, over_thresh
 
 
 def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, info, texture,
                                crop_name, crop_cfg, wx_multiplier, wx_headline, pump_lpm, drip_lpm, et_info):
-    """Builds a high-resolution, executive-grade irrigation zoning map, evaporation & runtime report."""
     cell_area = (xc[1] - xc[0]) * (yc[1] - yc[0]) if len(xc) > 1 and len(yc) > 1 else 1.0
-    zone_rows, wp, fc, t1, t2, t3 = extract_zone_summary(moisture, cell_area, texture, crop_cfg, wx_multiplier)
+    zone_rows, wp, fc, target_m, t1, t2, t3 = extract_zone_summary(moisture, cell_area, texture, crop_cfg, wx_multiplier)
     total_liters = sum(r["liters"] for r in zone_rows)
     total_area_m2 = length_m * width_m
     equiv_mm = (total_liters / total_area_m2) if total_area_m2 > 0 else 0.0
@@ -431,6 +459,7 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
         fontsize=9.5, color="#475569", fontweight="bold"
     )
 
+    # ---------------- LEFT: MAIN SPATIAL MOISTURE & ZONE MAP ----------------
     ax_map = fig.add_subplot(gs[:, 0])
     ax_map.set_facecolor("#FFFFFF")
 
@@ -457,16 +486,29 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
         spine.set_edgecolor("#CBD5E1")
         spine.set_linewidth(1.5)
 
-    badge_font = 7.0 if len(samples) > 20 else 8.0
+    # Anti-clutter sample badges
+    dense = len(samples) > 18
+    badge_font = 6.8 if dense else 8.0
+    dot_size = 70 if dense else 95
     for i, s in enumerate(samples):
-        ax_map.scatter([s.x], [s.y], s=95, color="#0F172A", edgecolors="white", linewidth=1.6, zorder=6)
+        ax_map.scatter([s.x], [s.y], s=dot_size, color="#0F172A", edgecolors="white", linewidth=1.5, zorder=6)
+        label_txt = f"{i+1}:{s.moisture:.0f}%" if dense else f"S{i+1}: {s.moisture:.0f}%"
         ax_map.annotate(
-            f"S{i+1}: {s.moisture:.0f}%",
-            xy=(s.x, s.y), xytext=(0, 8), textcoords="offset points",
+            label_txt,
+            xy=(s.x, s.y), xytext=(0, 7), textcoords="offset points",
             ha="center", va="bottom", fontsize=badge_font, fontweight="bold", color="#0F172A",
-            bbox=dict(boxstyle="round,pad=0.20", facecolor="white", edgecolor="#94A3B8", alpha=0.92),
+            bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor="#94A3B8", alpha=0.90),
             zorder=7
         )
+
+    # Start Corner (0,0) Anchor & North Orientation Indicator
+    ax_map.scatter([0], [0], s=140, marker="s", color="#DC2626", edgecolors="white", linewidth=1.5, zorder=8, clip_on=False)
+    ax_map.annotate("🚩 Start (0,0)", xy=(0, 0), xytext=(6, 6), textcoords="offset points",
+                    fontsize=8, fontweight="bold", color="#DC2626",
+                    bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor="#FCA5A5", alpha=0.92), zorder=9)
+    ax_map.text(0.97, 0.96, "N ↑", transform=ax_map.transAxes, ha="right", va="top",
+                fontsize=9.5, fontweight="bold", color="#0F172A",
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#CBD5E1", alpha=0.92), zorder=9)
 
     ax_map.set_xlim(0, length_m)
     ax_map.set_ylim(0, width_m)
@@ -476,9 +518,13 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
                      fontsize=12, fontweight="bold", color="#0F172A", pad=10)
 
     cbar = fig.colorbar(cf, ax=ax_map, orientation="horizontal", fraction=0.046, pad=0.11, aspect=35)
-    cbar.set_label("Volumetric Soil Moisture (%)", fontsize=9.5, fontweight="bold", color="#1E293B")
+    cbar.set_label(f"Volumetric Soil Moisture (%)  •  Ideal Target for {crop_name}: {target_m:.0f}%",
+                   fontsize=9.2, fontweight="bold", color="#1E293B")
     cbar.outline.set_edgecolor("#CBD5E1")
+    if vmin <= target_m <= vmax:
+        cbar.ax.axvline(target_m, color="#0F172A", linewidth=2.2)
 
+    # ---------------- TOP RIGHT: ZONE AREA DISTRIBUTION ----------------
     ax_bar = fig.add_subplot(gs[0, 1])
     ax_bar.set_facecolor("#FFFFFF")
     labels = [r["label"] for r in zone_rows][::-1]
@@ -500,6 +546,7 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
     ax_bar.spines["left"].set_color("#CBD5E1")
     ax_bar.spines["bottom"].set_color("#CBD5E1")
 
+    # ---------------- BOTTOM RIGHT: IRRIGATION, RUNTIME & NEXT WATERING ----------------
     ax_card = fig.add_subplot(gs[1, 1])
     ax_card.set_facecolor("#FFFFFF")
     ax_card.set_xticks([])
@@ -560,6 +607,70 @@ with st.expander("📝 Enter Field, Crop & Pump Details (Tap to Open / Close)", 
     with col_f1:
         st.markdown("**1. Farm Location & Dimensions**")
         city_input = st.text_input("Farm Location (City / Town)", value="Bengaluru")
+        if city_input != st.session_state.last_city_text:
+            st.session_state.last_city_text = city_input
+            st.session_state.gps_coords = None
+            if "lat" in st.query_params:
+                st.query_params.clear()
+
+        components.html(
+            """
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 2px 0 6px 0;">
+              <button id="gps-btn" onclick="detectGPS()" style="
+                width: 100%; padding: 8px 12px; background-color: #1B4332; color: white;
+                border: none; border-radius: 6px; font-size: 13.5px; font-weight: 600;
+                cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;
+              ">📍 Detect My GPS Location</button>
+              <div id="gps-status" style="font-size: 11.5px; color: #475569; margin-top: 4px;"></div>
+            </div>
+            <script>
+              function detectGPS() {
+                const btn = document.getElementById('gps-btn');
+                const status = document.getElementById('gps-status');
+                if (!navigator.geolocation) {
+                  status.innerText = 'GPS not supported on this browser.';
+                  return;
+                }
+                btn.innerText = '📡 Detecting GPS...';
+                btn.disabled = true;
+                navigator.geolocation.getCurrentPosition(
+                  function(pos) {
+                    const lat = pos.coords.latitude.toFixed(5);
+                    const lon = pos.coords.longitude.toFixed(5);
+                    status.innerText = 'Found: ' + lat + ', ' + lon + ' — Updating weather...';
+                    try {
+                      const url = new URL(window.parent.location.href);
+                      url.searchParams.set('lat', lat);
+                      url.searchParams.set('lon', lon);
+                      window.parent.location.href = url.toString();
+                    } catch (e) {
+                      const url = new URL(window.top.location.href);
+                      url.searchParams.set('lat', lat);
+                      url.searchParams.set('lon', lon);
+                      window.top.location.href = url.toString();
+                    }
+                  },
+                  function(err) {
+                    btn.innerText = '📍 Detect My GPS Location';
+                    btn.disabled = false;
+                    status.innerText = 'Permission denied or GPS off. Enable location and try again.';
+                  },
+                  { enableHighAccuracy: true, timeout: 10000 }
+                );
+              }
+            </script>
+            """,
+            height=64,
+        )
+
+        if st.session_state.gps_coords:
+            g_lat, g_lon = st.session_state.gps_coords
+            st.caption(f"✅ Locked to GPS: **{g_lat:.4f}°N, {g_lon:.4f}°E**")
+            if st.button("Use Typed City Name Instead", use_container_width=True):
+                st.session_state.gps_coords = None
+                st.query_params.clear()
+                st.rerun()
+
         length = st.number_input("Field Length X (meters)", min_value=5.0, max_value=10000.0, value=60.0, step=10.0)
         width = st.number_input("Field Width Y (meters)", min_value=5.0, max_value=10000.0, value=40.0, step=10.0)
         area_ha = (length * width) / 10000.0
@@ -628,8 +739,14 @@ field = sz.FieldSpec(length, width)
 texture = sz.TEXTURES[soil_choice]
 suggested = generate_serpentine_points(length, width, n_spots)
 
-# ---------------- LIVE WEATHER BANNER ----------------
-wx_data = fetch_live_weather(city_input)
+# ---------------- LIVE WEATHER BANNER (GPS OR TYPED CITY) ----------------
+if st.session_state.gps_coords:
+    g_lat, g_lon = st.session_state.gps_coords
+    gps_place = reverse_geocode_coords(g_lat, g_lon)
+    wx_data = fetch_weather_by_coords(g_lat, g_lon, f"📍 {gps_place}")
+else:
+    wx_data = fetch_live_weather(city_input)
+
 wx_mult, wx_status, wx_title, wx_desc = evaluate_weather_advice(wx_data)
 
 if wx_data:
