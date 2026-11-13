@@ -1,7 +1,9 @@
+import os
 import io
 import re
 import json
 import math
+import hashlib
 import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta
@@ -23,9 +25,9 @@ st.set_page_config(page_title="SoilScout AI", page_icon="🌱", layout="wide")
 st.markdown(
     """
     <style>
-    /* Clean page spacing */
+    /* Proper top clearance below Streamlit's top bar */
     .block-container {
-        padding-top: 1.4rem;
+        padding-top: 3.6rem !important;
         padding-bottom: 2.5rem;
         max-width: 1280px;
     }
@@ -33,24 +35,26 @@ st.markdown(
     /* Hero Banner */
     .hero-banner {
         background: linear-gradient(135deg, #064E3B 0%, #1B4332 55%, #2D6A4F 100%);
-        padding: 1.4rem 1.8rem;
+        padding: 1.45rem 1.8rem;
         border-radius: 14px;
         color: #FFFFFF;
+        margin-top: 0.4rem;
         margin-bottom: 1.2rem;
-        box-shadow: 0 6px 18px rgba(6, 78, 59, 0.16);
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 6px 18px rgba(6, 78, 59, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.14);
     }
     .hero-title {
         font-size: 1.75rem;
         font-weight: 800;
         margin: 0;
+        line-height: 1.25;
         letter-spacing: -0.02em;
         color: #FFFFFF;
     }
     .hero-sub {
         font-size: 0.96rem;
         color: #D1FAE5;
-        margin-top: 0.3rem;
+        margin-top: 0.35rem;
         margin-bottom: 0;
     }
 
@@ -79,7 +83,7 @@ st.markdown(
 
     /* Elevated Metric Cards */
     div[data-testid="stMetric"] {
-        background-color: rgba(248, 250, 252, 0.92);
+        background-color: rgba(248, 250, 252, 0.95);
         border: 1px solid #CBD5E1;
         border-left: 4px solid #10B981;
         padding: 12px 14px;
@@ -138,12 +142,14 @@ st.markdown(
 
 if "samples" not in st.session_state:
     st.session_state.samples = []
-if "bt_conn" not in st.session_state:
-    st.session_state.bt_conn = None
 if "gps_coords" not in st.session_state:
     st.session_state.gps_coords = None
 if "last_city_text" not in st.session_state:
     st.session_state.last_city_text = "Bengaluru"
+if "saved_logs" not in st.session_state:
+    st.session_state.saved_logs = []
+if "last_saved_sig" not in st.session_state:
+    st.session_state.last_saved_sig = ""
 
 # Capture GPS coordinates returned by browser geolocation button via URL query params
 qp = st.query_params
@@ -154,7 +160,7 @@ if "lat" in qp and "lon" in qp:
         pass
 
 
-# ---------------- INDIAN SOIL PROFILES (COMPATIBLE WITH soil_zoning) ----------------
+# ---------------- INDIAN SOIL PROFILES ----------------
 class IndianSoilAdapter:
     """Wraps a base texture from soil_zoning.py with Indian soil agronomic parameters."""
     def __init__(self, label: str, base_key: str, field_capacity: float, wilting_point: float, desc: str):
@@ -250,6 +256,58 @@ def step_header(badge_text: str, title_text: str):
         """,
         unsafe_allow_html=True,
     )
+
+
+def auto_save_samples(samples_list: list, source_tag: str, crop_name: str):
+    """Automatically saves cleaned readings to CSV & TXT formats without prompting the user."""
+    if not samples_list:
+        return
+
+    df = pd.DataFrame([
+        {
+            "spot": i + 1,
+            "x_m": round(s.x, 2),
+            "y_m": round(s.y, 2),
+            "moisture_pct": round(s.moisture, 2),
+            "temp_c": round(s.temp_c, 2),
+            "humidity_pct": round(s.rh, 2),
+        }
+        for i, s in enumerate(samples_list)
+    ])
+    csv_str = df.to_csv(index=False)
+    txt_lines = [
+        f"{int(r['spot'])},{r['moisture_pct']},{r['temp_c']},{r['humidity_pct']}"
+        for _, r in df.iterrows()
+    ]
+    txt_str = "\n".join(txt_lines) + "\n"
+
+    sig = hashlib.md5(csv_str.encode("utf-8")).hexdigest()
+    if sig == st.session_state.last_saved_sig:
+        return
+    st.session_state.last_saved_sig = sig
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    readable_ts = datetime.now().strftime("%d %b %Y, %I:%M %p")
+    safe_crop = re.sub(r"[^a-zA-Z0-9]+", "_", crop_name).strip("_")
+    base_name = f"soilscout_{safe_crop}_{ts}"
+
+    # Write local backup files automatically (works locally & in writable cloud temp/workspace)
+    try:
+        os.makedirs("saved_field_logs", exist_ok=True)
+        with open(os.path.join("saved_field_logs", f"{base_name}.csv"), "w", encoding="utf-8") as f_csv:
+            f_csv.write(csv_str)
+        with open(os.path.join("saved_field_logs", f"{base_name}.txt"), "w", encoding="utf-8") as f_txt:
+            f_txt.write(txt_str)
+    except Exception:
+        pass
+
+    st.session_state.saved_logs.insert(0, {
+        "title": f"{crop_name} • {len(samples_list)} spots ({source_tag}) — {readable_ts}",
+        "base_name": base_name,
+        "csv_data": csv_str,
+        "txt_data": txt_str,
+        "samples": list(samples_list),
+    })
 
 
 def recommended_spot_count(length_m: float, width_m: float) -> int:
@@ -932,31 +990,6 @@ with st.expander("⚙️ Enter Field, Soil, Crop & Pump Details (Tap to Open / C
         use_auto = st.checkbox(f"Auto-scale checkpoints ({auto_spots} spots)", value=True)
         n_spots = auto_spots if use_auto else st.slider("Manual Checkpoint Count", min_value=5, max_value=35, value=auto_spots)
 
-    st.divider()
-    st.markdown("**4. Sensor Connection Mode**")
-    mode = st.radio(
-        "How are you collecting data?",
-        ["Phone Bluetooth Log (Paste / Upload)", "Live Bluetooth Wand (HC-05)", "Offline Demo Simulator"],
-        horizontal=True
-    )
-
-    if mode == "Live Bluetooth Wand (HC-05)":
-        ports = sz.SerialSampleSource.candidate_ports()
-        b_col1, b_col2, b_col3 = st.columns([2, 1, 1])
-        port_input = b_col1.text_input("Bluetooth COM Port", value=ports[0] if ports else "COM5")
-        if b_col2.button("🔗 Connect", use_container_width=True):
-            conn = sz.SerialSampleSource.auto_connect(port_input, baud=9600)
-            if conn:
-                st.session_state.bt_conn = conn
-                st.success(f"Connected to {port_input}")
-            else:
-                st.error(f"Could not connect to {port_input}.")
-        if b_col3.button("❌ Disconnect", use_container_width=True):
-            if st.session_state.bt_conn:
-                st.session_state.bt_conn.close()
-                st.session_state.bt_conn = None
-                st.info("Disconnected")
-
 field = sz.FieldSpec(length, width)
 texture = INDIAN_SOILS[soil_choice]
 suggested = generate_serpentine_points(length, width, n_spots)
@@ -1007,149 +1040,155 @@ with table_col:
     sug_df.index = [f"Spot {i+1}" for i in range(len(sug_df))]
     st.dataframe(sug_df.style.format("{:.1f}"), use_container_width=True, height=360)
 
-# ---------------- STEP 2: PASTE OR UPLOAD READINGS ----------------
+# ---------------- STEP 2: PASTE, UPLOAD CSV, OR DEMO SIMULATOR (AUTO-SAVED) ----------------
 st.divider()
-step_header("STEP 2", "Paste or Upload Wand Readings")
+step_header("STEP 2", "Load Wand Data (Auto-Saves CSV & TXT Automatically)")
 
-idx = min(len(st.session_state.samples), len(suggested) - 1)
-default_x, default_y = float(suggested[idx][0]), float(suggested[idx][1])
+tab_paste, tab_file, tab_demo = st.tabs([
+    "📋 Paste Bluetooth Log",
+    "📁 Upload CSV / TXT File",
+    "🎲 Offline Demo Simulator"
+])
 
-if mode == "Phone Bluetooth Log (Paste / Upload)":
-    tab_paste, tab_file = st.tabs(["📋 Paste Bluetooth Text (Fastest)", "📁 Upload CSV / TXT File"])
-    def_t = wx_data["temp_now"] if wx_data else 28.0
-    def_h = wx_data["rh_now"] if wx_data else 55.0
+def_t = wx_data["temp_now"] if wx_data else 28.0
+def_h = wx_data["rh_now"] if wx_data else 55.0
 
-    with tab_paste:
-        st.caption("Copy the readings directly from **Serial Bluetooth Terminal** and paste below—timestamps and connection messages are cleaned automatically.")
-        pasted_text = st.text_area(
-            "Paste copied Bluetooth log here:",
-            height=130,
-            placeholder="Example:\n10:14:02 Connected to HC-05\n10:14:15 1,24.5,31.2,48.0\n10:15:02 2,36.8,31.0,49.0\n10:15:48 3,41.2,30.8,50.0"
-        )
-        if pasted_text.strip():
-            parsed_paste = parse_bluetooth_log(pasted_text, suggested, def_t, def_h)
-            if parsed_paste:
-                st.session_state.samples = parsed_paste
-                st.success(f"Cleaned and matched {len(parsed_paste)} readings from pasted text!")
-            else:
-                st.warning("Could not find valid sensor numbers in the pasted text yet.")
-
-    with tab_file:
-        uploaded = st.file_uploader("Choose your saved field log file (.csv or .txt)", type=["csv", "txt", "log"])
-        if uploaded is not None:
-            parsed_file = parse_bluetooth_log(uploaded.getvalue(), suggested, def_t, def_h)
-            if parsed_file:
-                st.session_state.samples = parsed_file
-                st.success(f"Cleaned and matched {len(parsed_file)} sensor readings from file!")
-            else:
-                st.error("No valid sensor readings found in that file.")
-
-elif mode == "Live Bluetooth Wand (HC-05)":
-    c_x, c_y = st.columns(2)
-    cur_x = c_x.number_input("Your Current X (m)", min_value=0.0, max_value=float(length), value=default_x)
-    cur_y = c_y.number_input("Your Current Y (m)", min_value=0.0, max_value=float(width), value=default_y)
-
-    if st.button("📡 Trigger Wand & Save Reading", type="primary", use_container_width=True):
-        if st.session_state.bt_conn is None:
-            st.warning("Open 'Enter Field, Soil, Crop & Pump Details' at the top and click 'Connect' first!")
+with tab_paste:
+    st.caption("Copy the readings directly from **Serial Bluetooth Terminal** and paste below—data is automatically cleaned and saved as CSV & TXT.")
+    pasted_text = st.text_area(
+        "Paste copied Bluetooth log here:",
+        height=130,
+        placeholder="Example:\n10:14:02 Connected to HC-05\n10:14:15 1,24.5,31.2,48.0\n10:15:02 2,36.8,31.0,49.0\n10:15:48 3,41.2,30.8,50.0"
+    )
+    if pasted_text.strip():
+        parsed_paste = parse_bluetooth_log(pasted_text, suggested, def_t, def_h)
+        if parsed_paste:
+            st.session_state.samples = parsed_paste
+            auto_save_samples(parsed_paste, "Bluetooth Paste", crop_name)
         else:
-            smp = st.session_state.bt_conn.read_sample(cur_x, cur_y)
-            if smp:
-                st.session_state.samples.append(smp)
-                st.success(f"Saved: {smp.moisture:.1f}% moisture at ({cur_x}m, {cur_y}m)")
-            else:
-                st.error("Sensor read timed out. Try again.")
+            st.warning("Could not find valid sensor numbers in the pasted text yet.")
 
-else:
-    if st.button("🎲 Auto-Fill Simulated Readings for This Field", type="primary", use_container_width=True):
+with tab_file:
+    st.caption("Upload the saved `.csv` or `.txt` log file from your phone or computer—automatically cleaned and archived.")
+    uploaded = st.file_uploader("Choose your saved field log file (.csv or .txt)", type=["csv", "txt", "log"])
+    if uploaded is not None:
+        parsed_file = parse_bluetooth_log(uploaded.getvalue(), suggested, def_t, def_h)
+        if parsed_file:
+            st.session_state.samples = parsed_file
+            auto_save_samples(parsed_file, "File Upload", crop_name)
+        else:
+            st.error("No valid sensor readings found in that file.")
+
+with tab_demo:
+    st.caption("Test the zoning map, water savings, and pump runtime schedule instantly without hardware connected.")
+    if st.button("🎲 Generate Realistic Demo Readings for This Field", type="primary", use_container_width=True):
         sim = sz.SimulatedSampleSource(field, texture, seed=7)
-        st.session_state.samples = [sim.read_sample(float(x), float(y)) for x, y in suggested]
-        st.success(f"Generated {len(st.session_state.samples)} realistic field readings!")
+        demo_samples = [sim.read_sample(float(x), float(y)) for x, y in suggested]
+        st.session_state.samples = demo_samples
+        auto_save_samples(demo_samples, "Demo Scan", crop_name)
 
 if st.session_state.samples:
+    latest_log = st.session_state.saved_logs[0] if st.session_state.saved_logs else None
+    if latest_log:
+        st.success(f"✅ **Auto-Saved ({len(st.session_state.samples)} readings)** — `{latest_log['base_name']}.csv` & `.txt` saved automatically.")
+        dl_c1, dl_c2, dl_c3 = st.columns([1, 1, 0.8])
+        dl_c1.download_button("📄 Export Auto-Saved CSV", latest_log["csv_data"],
+                              file_name=f"{latest_log['base_name']}.csv", mime="text/csv", use_container_width=True)
+        dl_c2.download_button("📝 Export Auto-Saved TXT", latest_log["txt_data"],
+                              file_name=f"{latest_log['base_name']}.txt", mime="text/plain", use_container_width=True)
+        if dl_c3.button("🗑️ Clear Active Readings", use_container_width=True):
+            st.session_state.samples = []
+            st.rerun()
+
     rec_df = pd.DataFrame([
         {"Spot": f"Spot {i+1}", "X (m)": s.x, "Y (m)": s.y, "Moisture (%)": s.moisture, "Temp (°C)": s.temp_c, "Humidity (%)": s.rh}
         for i, s in enumerate(st.session_state.samples)
     ])
     st.dataframe(rec_df, use_container_width=True, hide_index=True)
-    if st.button("🗑️ Clear Readings"):
-        st.session_state.samples = []
-        st.rerun()
 
-# ---------------- STEP 3: GENERATE PREMIUM AI MAP, SAVINGS & ZONE SCHEDULE ----------------
+if len(st.session_state.saved_logs) > 1:
+    with st.expander(f"🗂️ Auto-Saved Field Log History ({len(st.session_state.saved_logs)} scans saved)", expanded=False):
+        log_titles = [entry["title"] for entry in st.session_state.saved_logs]
+        chosen_title = st.selectbox("Switch to a previously auto-saved field log:", options=log_titles)
+        if st.button("🔄 Load Selected Saved Log"):
+            for entry in st.session_state.saved_logs:
+                if entry["title"] == chosen_title:
+                    st.session_state.samples = entry["samples"]
+                    st.rerun()
+
+# ---------------- STEP 3: AUTOMATICALLY GENERATE PREMIUM AI MAP, SAVINGS & SCHEDULE ----------------
 st.divider()
 step_header("STEP 3", "Zone-by-Zone Irrigation, Savings & Schedule")
 
 if len(st.session_state.samples) < 3:
-    st.info("Paste, upload, or record at least **3 samples** to generate the irrigation zoning map.")
+    st.info("Paste, upload, or generate at least **3 samples** in Step 2—your irrigation map & schedule will appear here automatically.")
 else:
-    if st.button("🗺️ Generate Zone-by-Zone Map & Savings Report", type="primary", use_container_width=True):
-        with st.spinner("Calculating Zone Water, Pump Runtimes & Resource Savings..."):
-            clean_samples = sz.sanitize_samples(st.session_state.samples, field)
-            model = sz.HybridMoistureModel(field, model="auto").fit(clean_samples)
+    with st.spinner("Generating Zone-by-Zone Map, Pump Runtimes & Resource Savings..."):
+        clean_samples = sz.sanitize_samples(st.session_state.samples, field)
+        model = sz.HybridMoistureModel(field, model="auto").fit(clean_samples)
 
-            xc, yc, dx, dy = field.make_grid(280)
-            XX, YY = np.meshgrid(xc, yc)
-            pred = model.predict(np.column_stack([XX.ravel(), YY.ravel()]))
-            moisture = pred["final"].reshape(XX.shape)
-            vigor = sz.vigor_index(moisture, pred["temp"].reshape(XX.shape), pred["vpd"].reshape(XX.shape), texture)
+        xc, yc, dx, dy = field.make_grid(280)
+        XX, YY = np.meshgrid(xc, yc)
+        pred = model.predict(np.column_stack([XX.ravel(), YY.ravel()]))
+        moisture = pred["final"].reshape(XX.shape)
+        vigor = sz.vigor_index(moisture, pred["temp"].reshape(XX.shape), pred["vpd"].reshape(XX.shape), texture)
 
-            info = {
-                "temp": float(np.mean(pred["temp"])),
-                "rh": float(np.mean(pred["rh"])),
-                "mean_moisture": float(moisture.mean()),
-                "min_moisture": float(moisture.min()),
-                "max_moisture": float(moisture.max()),
-                "vigor": float(vigor.mean()),
+        info = {
+            "temp": float(np.mean(pred["temp"])),
+            "rh": float(np.mean(pred["rh"])),
+            "mean_moisture": float(moisture.mean()),
+            "min_moisture": float(moisture.min()),
+            "max_moisture": float(moisture.max()),
+            "vigor": float(vigor.mean()),
+        }
+
+        et_info = estimate_evapotranspiration_and_schedule(
+            info["temp"], info["rh"], info["mean_moisture"], texture, crop_cfg, wx_data
+        )
+
+        fig, total_liters, equiv_mm, zone_rows, pump_str, drip_str, roi = draw_premium_zoning_report(
+            length, width, xc, yc, moisture, clean_samples, info, texture,
+            crop_name, crop_cfg, wx_mult, wx_title, pump_lpm, drip_lpm, pump_kw, et_info
+        )
+
+        # Row 1: Water & Electricity Savings ROI Strip
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("💧 Water Saved vs. Uniform", f"{roi['saved_liters']:,.0f} L",
+                  f"{roi['saved_pct']:.1f}% less water used")
+        s2.metric("⚡ Electricity Saved", f"{roi['saved_kwh']:.1f} kWh",
+                  f"Pump time saved: {roi['saved_time_str']}")
+        s3.metric(f"Total {crop_name} Water", f"{total_liters:,.0f} L",
+                  "Hold for rain" if wx_mult == 0 else f"~{equiv_mm:.1f} mm avg depth")
+        s4.metric("📅 Next Watering Day", et_info["headline"], et_info["subtext"])
+
+        # Row 2: Evaporation & Total Runtime Strip
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("Avg Soil Moisture", f"{info['mean_moisture']:.1f}%",
+                  f"Range: {info['min_moisture']:.0f}% – {info['max_moisture']:.0f}%")
+        e2.metric("☀️ Crop Evaporation (ETc)", f"{et_info['etc_mm']:.1f} mm / day",
+                  f"Dry-down: -{et_info['daily_loss_pct']:.1f}% / day")
+        e3.metric(f"⚡ Total Borewell ({pump_lpm:.0f} L/m)", pump_str, "Combined across dry zones")
+        e4.metric(f"💧 Total Drip ({drip_lpm:.0f} L/m)", drip_str, "Combined across dry zones")
+
+        # Zone-by-Zone Valve Runtime Table
+        st.markdown("#### 🚰 Zone-by-Zone Water & Valve Runtime Schedule")
+        zone_table = pd.DataFrame([
+            {
+                "Management Zone": r["label"],
+                "Field Share": f"{r['pct_area']:.1f}% ({r['area_m2']:,.0f} m²)",
+                "Avg Moisture": f"{r['avg_moisture']:.1f}%" if r["pct_area"] > 0 else "—",
+                "Water Needed": f"{r['liters']:,.0f} L" if r["liters"] > 0 else "0 L (Skip)",
+                f"⚡ Borewell Pump ({pump_lpm:.0f} L/m)": r["pump_time"],
+                f"💧 Drip Valve ({drip_lpm:.0f} L/m)": r["drip_time"],
             }
+            for r in zone_rows
+        ])
+        st.dataframe(zone_table, use_container_width=True, hide_index=True)
 
-            et_info = estimate_evapotranspiration_and_schedule(
-                info["temp"], info["rh"], info["mean_moisture"], texture, crop_cfg, wx_data
-            )
+        st.pyplot(fig, use_container_width=True)
 
-            fig, total_liters, equiv_mm, zone_rows, pump_str, drip_str, roi = draw_premium_zoning_report(
-                length, width, xc, yc, moisture, clean_samples, info, texture,
-                crop_name, crop_cfg, wx_mult, wx_title, pump_lpm, drip_lpm, pump_kw, et_info
-            )
-
-            # Row 1: Water & Electricity Savings ROI Strip
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("💧 Water Saved vs. Uniform", f"{roi['saved_liters']:,.0f} L",
-                      f"{roi['saved_pct']:.1f}% less water used")
-            s2.metric("⚡ Electricity Saved", f"{roi['saved_kwh']:.1f} kWh",
-                      f"Pump time saved: {roi['saved_time_str']}")
-            s3.metric(f"Total {crop_name} Water", f"{total_liters:,.0f} L",
-                      "Hold for rain" if wx_mult == 0 else f"~{equiv_mm:.1f} mm avg depth")
-            s4.metric("📅 Next Watering Day", et_info["headline"], et_info["subtext"])
-
-            # Row 2: Evaporation & Total Runtime Strip
-            e1, e2, e3, e4 = st.columns(4)
-            e1.metric("Avg Soil Moisture", f"{info['mean_moisture']:.1f}%",
-                      f"Range: {info['min_moisture']:.0f}% – {info['max_moisture']:.0f}%")
-            e2.metric("☀️ Crop Evaporation (ETc)", f"{et_info['etc_mm']:.1f} mm / day",
-                      f"Dry-down: -{et_info['daily_loss_pct']:.1f}% / day")
-            e3.metric(f"⚡ Total Borewell ({pump_lpm:.0f} L/m)", pump_str, "Combined across dry zones")
-            e4.metric(f"💧 Total Drip ({drip_lpm:.0f} L/m)", drip_str, "Combined across dry zones")
-
-            # Zone-by-Zone Valve Runtime Table
-            st.markdown("#### 🚰 Zone-by-Zone Water & Valve Runtime Schedule")
-            zone_table = pd.DataFrame([
-                {
-                    "Management Zone": r["label"],
-                    "Field Share": f"{r['pct_area']:.1f}% ({r['area_m2']:,.0f} m²)",
-                    "Avg Moisture": f"{r['avg_moisture']:.1f}%" if r["pct_area"] > 0 else "—",
-                    "Water Needed": f"{r['liters']:,.0f} L" if r["liters"] > 0 else "0 L (Skip)",
-                    f"⚡ Borewell Pump ({pump_lpm:.0f} L/m)": r["pump_time"],
-                    f"💧 Drip Valve ({drip_lpm:.0f} L/m)": r["drip_time"],
-                }
-                for r in zone_rows
-            ])
-            st.dataframe(zone_table, use_container_width=True, hide_index=True)
-
-            st.pyplot(fig, use_container_width=True)
-
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=260)
-            plt.close(fig)
-            st.download_button("📥 Download Full Zone-by-Zone & Savings Report (PNG)", buf.getvalue(),
-                               file_name="soilscout_precision_report.png", mime="image/png", use_container_width=True)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=260)
+        plt.close(fig)
+        st.download_button("📥 Download Full Zone-by-Zone & Savings Report (PNG)", buf.getvalue(),
+                           file_name="soilscout_precision_report.png", mime="image/png", use_container_width=True)
