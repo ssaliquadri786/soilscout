@@ -24,7 +24,6 @@ if "bt_conn" not in st.session_state:
     st.session_state.bt_conn = None
 
 # ---------------- INDIAN CROP CATEGORIES & AGRONOMIC PROFILES ----------------
-# kc = Crop Evapotranspiration Coefficient (higher = faster water loss through leaves)
 INDIAN_CROPS = {
     "🌾 Cereals & Millets": {
         "Paddy (Rice)": {"root_depth_m": 0.20, "target_fc_ratio": 1.05, "kc": 1.15, "notes": "Shallow 20 cm roots; high evaporation & water demand."},
@@ -199,10 +198,7 @@ def evaluate_weather_advice(wx: dict | None):
 
 def estimate_evapotranspiration_and_schedule(temp_c: float, rh: float, mean_moisture: float,
                                            texture, crop_cfg: dict, wx_data: dict | None):
-    """
-    Calculates daily crop evapotranspiration (ETc in mm/day), soil moisture dry-down rate (%/day),
-    and estimates the exact Next Watering Day.
-    """
+    """Calculates daily crop evapotranspiration (ETc in mm/day), dry-down rate, and Next Watering Day."""
     fc = getattr(texture, "field_capacity", 38.0)
     wp = getattr(texture, "wilting_point", 18.0)
     root_depth = crop_cfg["root_depth_m"]
@@ -210,29 +206,21 @@ def estimate_evapotranspiration_and_schedule(temp_c: float, rh: float, mean_mois
     target_m = crop_cfg["target_fc_ratio"] * fc
     warn_thresh = wp + 0.72 * max(1.0, (target_m - wp))
 
-    # Reference Evapotranspiration ET0 (mm/day) via temperature + Vapor Pressure Deficit (VPD)
     t_eff = wx_data["temp_max"] * 0.6 + wx_data["temp_now"] * 0.4 if wx_data else temp_c
     rh_eff = wx_data["rh_now"] if wx_data else rh
-    es = 0.6108 * math.exp((17.27 * t_eff) / (t_eff + 237.3))  # Saturation vapor pressure (kPa)
+    es = 0.6108 * math.exp((17.27 * t_eff) / (t_eff + 237.3))
     ea = es * (max(10.0, min(100.0, rh_eff)) / 100.0)
     vpd = max(0.2, es - ea)
 
     et0_mm = max(1.5, (0.14 * t_eff) + (1.35 * vpd) - 0.8)
-    etc_mm = et0_mm * kc  # Crop-specific water loss in mm/day
-
-    # Convert mm/day loss to volumetric soil moisture % drop per day
-    # 1 mm in D meters root depth = (0.1 / D)% volumetric moisture
+    etc_mm = et0_mm * kc
     daily_loss_pct = max(0.25, etc_mm / (root_depth * 10.0))
 
-    # Rain bonus in mm if forecast expects rain
     rain_bonus_mm = wx_data["rain_mm"] if (wx_data and wx_data["rain_prob"] >= 35) else 0.0
     rain_bonus_pct = rain_bonus_mm / (root_depth * 10.0)
 
-    # Current reserve above irrigation trigger threshold
     reserve_pct = (mean_moisture + rain_bonus_pct) - warn_thresh
     days_until_trigger = reserve_pct / daily_loss_pct
-
-    # Full cycle interval after watering back up to target moisture
     cycle_days = max(1, int(round((target_m - warn_thresh) / daily_loss_pct)))
 
     today = datetime.now()
@@ -266,10 +254,7 @@ def estimate_evapotranspiration_and_schedule(temp_c: float, rh: float, mean_mois
 
 
 def parse_bluetooth_log(raw_bytes: bytes, suggested_pts: np.ndarray, default_temp: float, default_rh: float):
-    """
-    Smart parser for Serial Bluetooth Terminal logs (.txt or .csv).
-    Strips timestamps, ignores 'Connected/Disconnected' status lines, and maps spots to (x, y).
-    """
+    """Smart parser for Serial Bluetooth Terminal logs (.txt or .csv)."""
     text = raw_bytes.decode("utf-8", errors="ignore")
     lines = text.splitlines()
     samples = []
@@ -446,7 +431,6 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
         fontsize=9.5, color="#475569", fontweight="bold"
     )
 
-    # ---------------- LEFT: MAIN SPATIAL MOISTURE & ZONE MAP ----------------
     ax_map = fig.add_subplot(gs[:, 0])
     ax_map.set_facecolor("#FFFFFF")
 
@@ -495,7 +479,6 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
     cbar.set_label("Volumetric Soil Moisture (%)", fontsize=9.5, fontweight="bold", color="#1E293B")
     cbar.outline.set_edgecolor("#CBD5E1")
 
-    # ---------------- TOP RIGHT: ZONE AREA DISTRIBUTION ----------------
     ax_bar = fig.add_subplot(gs[0, 1])
     ax_bar.set_facecolor("#FFFFFF")
     labels = [r["label"] for r in zone_rows][::-1]
@@ -517,7 +500,6 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
     ax_bar.spines["left"].set_color("#CBD5E1")
     ax_bar.spines["bottom"].set_color("#CBD5E1")
 
-    # ---------------- BOTTOM RIGHT: IRRIGATION, RUNTIME & NEXT WATERING ----------------
     ax_card = fig.add_subplot(gs[1, 1])
     ax_card.set_facecolor("#FFFFFF")
     ax_card.set_xticks([])
@@ -571,68 +553,72 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
     return fig, total_liters, equiv_mm, zone_rows, pump_time_str, drip_time_str
 
 
-# ---------------- SIDEBAR: FIELD, CROP, WEATHER & EQUIPMENT ----------------
-with st.sidebar:
-    st.header("1. Field & Crop Selection")
-    city_input = st.text_input("Farm Location (City / Town)", value="Bengaluru")
-    length = st.number_input("Field Length X (meters)", min_value=5.0, max_value=10000.0, value=60.0, step=10.0)
-    width = st.number_input("Field Width Y (meters)", min_value=5.0, max_value=10000.0, value=40.0, step=10.0)
+# ---------------- COLLAPSIBLE DROPDOWN: ENTER FIELD, CROP & PUMP DETAILS ----------------
+with st.expander("📝 Enter Field, Crop & Pump Details (Tap to Open / Close)", expanded=False):
+    col_f1, col_f2, col_f3 = st.columns(3)
 
-    area_ha = (length * width) / 10000.0
-    st.caption(f"Total Area: **{length * width:,.0f} m²** ({area_ha:,.2f} hectares)")
+    with col_f1:
+        st.markdown("**1. Farm Location & Dimensions**")
+        city_input = st.text_input("Farm Location (City / Town)", value="Bengaluru")
+        length = st.number_input("Field Length X (meters)", min_value=5.0, max_value=10000.0, value=60.0, step=10.0)
+        width = st.number_input("Field Width Y (meters)", min_value=5.0, max_value=10000.0, value=40.0, step=10.0)
+        area_ha = (length * width) / 10000.0
+        st.caption(f"Total Area: **{length * width:,.0f} m²** ({area_ha:,.2f} hectares)")
 
-    soil_choice = st.selectbox(
-        "Soil Texture",
-        options=list(sz.TEXTURES.keys()),
-        format_func=lambda k: sz.TEXTURES[k].label
-    )
+    with col_f2:
+        st.markdown("**2. Soil & Crop Selection**")
+        soil_choice = st.selectbox(
+            "Soil Texture",
+            options=list(sz.TEXTURES.keys()),
+            format_func=lambda k: sz.TEXTURES[k].label
+        )
+        crop_category = st.selectbox("Crop Category", options=list(INDIAN_CROPS.keys()))
+        crop_name = st.selectbox("Select Crop / Plant", options=list(INDIAN_CROPS[crop_category].keys()))
+        crop_cfg = INDIAN_CROPS[crop_category][crop_name]
+        st.caption(f"🌱 **{crop_name}:** {crop_cfg['notes']}")
 
-    crop_category = st.selectbox("Crop Category", options=list(INDIAN_CROPS.keys()))
-    crop_name = st.selectbox("Select Crop / Plant", options=list(INDIAN_CROPS[crop_category].keys()))
-    crop_cfg = INDIAN_CROPS[crop_category][crop_name]
-    st.caption(f"🌱 **{crop_name}:** {crop_cfg['notes']}")
+    with col_f3:
+        st.markdown("**3. Pump, Drip & Checkpoints**")
+        pump_preset = st.selectbox(
+            "Borewell Pump Size",
+            ["5 HP Borewell (~400 L/min)", "3 HP Borewell (~250 L/min)", "7.5 HP Borewell (~600 L/min)", "Custom"]
+        )
+        if "5 HP" in pump_preset:
+            pump_lpm = 400.0
+        elif "3 HP" in pump_preset:
+            pump_lpm = 250.0
+        elif "7.5 HP" in pump_preset:
+            pump_lpm = 600.0
+        else:
+            pump_lpm = st.number_input("Custom Pump Flow (Liters/min)", min_value=10.0, max_value=5000.0, value=400.0, step=25.0)
 
-    auto_spots = recommended_spot_count(length, width)
-    use_auto = st.checkbox(f"Auto-scale checkpoints by area ({auto_spots} spots)", value=True)
-    n_spots = auto_spots if use_auto else st.slider("Manual Checkpoint Count", min_value=5, max_value=35, value=auto_spots)
+        drip_lpm = st.number_input("Drip System Flow (Liters/min)", min_value=10.0, max_value=3000.0, value=150.0, step=10.0,
+                                   help="Typical field drip lateral delivery is 100–250 L/min depending on emitter count.")
+
+        auto_spots = recommended_spot_count(length, width)
+        use_auto = st.checkbox(f"Auto-scale checkpoints ({auto_spots} spots)", value=True)
+        n_spots = auto_spots if use_auto else st.slider("Manual Checkpoint Count", min_value=5, max_value=35, value=auto_spots)
 
     st.divider()
-    st.header("2. Pump & Drip Flow Rates")
-    pump_preset = st.selectbox(
-        "Borewell Pump Size",
-        ["5 HP Borewell (~400 L/min)", "3 HP Borewell (~250 L/min)", "7.5 HP Borewell (~600 L/min)", "Custom"]
-    )
-    if "5 HP" in pump_preset:
-        pump_lpm = 400.0
-    elif "3 HP" in pump_preset:
-        pump_lpm = 250.0
-    elif "7.5 HP" in pump_preset:
-        pump_lpm = 600.0
-    else:
-        pump_lpm = st.number_input("Custom Pump Flow (Liters/min)", min_value=10.0, max_value=5000.0, value=400.0, step=25.0)
-
-    drip_lpm = st.number_input("Drip System Flow (Liters/min)", min_value=10.0, max_value=3000.0, value=150.0, step=10.0,
-                               help="Typical field drip lateral delivery is 100–250 L/min depending on emitter count.")
-
-    st.divider()
-    st.header("3. Data Input Mode")
+    st.markdown("**4. Sensor Connection Mode**")
     mode = st.radio(
         "How are you collecting data?",
-        ["Upload CSV / Bluetooth Log", "Live Bluetooth Wand (HC-05)", "Offline Demo Simulator"]
+        ["Upload CSV / Bluetooth Log", "Live Bluetooth Wand (HC-05)", "Offline Demo Simulator"],
+        horizontal=True
     )
 
     if mode == "Live Bluetooth Wand (HC-05)":
         ports = sz.SerialSampleSource.candidate_ports()
-        port_input = st.text_input("Bluetooth COM Port", value=ports[0] if ports else "COM5")
-        col_c1, col_c2 = st.columns(2)
-        if col_c1.button("🔗 Connect", use_container_width=True):
+        b_col1, b_col2, b_col3 = st.columns([2, 1, 1])
+        port_input = b_col1.text_input("Bluetooth COM Port", value=ports[0] if ports else "COM5")
+        if b_col2.button("🔗 Connect", use_container_width=True):
             conn = sz.SerialSampleSource.auto_connect(port_input, baud=9600)
             if conn:
                 st.session_state.bt_conn = conn
                 st.success(f"Connected to {port_input}")
             else:
                 st.error(f"Could not connect to {port_input}.")
-        if col_c2.button("❌ Disconnect", use_container_width=True):
+        if b_col3.button("❌ Disconnect", use_container_width=True):
             if st.session_state.bt_conn:
                 st.session_state.bt_conn.close()
                 st.session_state.bt_conn = None
@@ -708,7 +694,7 @@ elif mode == "Live Bluetooth Wand (HC-05)":
 
     if st.button("📡 Trigger Wand & Save Reading", type="primary", use_container_width=True):
         if st.session_state.bt_conn is None:
-            st.warning("Click 'Connect' in the left sidebar first!")
+            st.warning("Open 'Enter Field, Crop & Pump Details' at the top and click 'Connect' first!")
         else:
             smp = st.session_state.bt_conn.read_sample(cur_x, cur_y)
             if smp:
@@ -769,7 +755,6 @@ else:
                 crop_name, crop_cfg, wx_mult, wx_title, pump_lpm, drip_lpm, et_info
             )
 
-            # Row 1: Moisture, Water Volume & Equipment Runtime
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Avg Soil Moisture", f"{info['mean_moisture']:.1f}%",
                       f"Range: {info['min_moisture']:.0f}% – {info['max_moisture']:.0f}%")
@@ -778,7 +763,6 @@ else:
             k3.metric(f"⚡ Borewell ({pump_lpm:.0f} L/m)", pump_str, "Direct pump runtime")
             k4.metric(f"💧 Drip ({drip_lpm:.0f} L/m)", drip_str, "Drip valve runtime")
 
-            # Row 2: Evaporation Rate & Next Watering Day Estimator
             e1, e2, e3 = st.columns(3)
             e1.metric("☀️ Crop Evaporation (ETc)", f"{et_info['etc_mm']:.1f} mm / day",
                       f"Ref ET₀: {et_info['et0_mm']:.1f} mm/day | VPD: {et_info['vpd']:.2f} kPa")
