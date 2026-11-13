@@ -13,11 +13,128 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import Patch
 
 import soil_zoning as sz
 
 st.set_page_config(page_title="SoilScout AI", page_icon="🌱", layout="wide")
-st.title("🌱 SoilScout AI — Precision Irrigation & Weather Advisor")
+
+# ---------------- CUSTOM AGRITECH UI STYLING ----------------
+st.markdown(
+    """
+    <style>
+    /* Clean page spacing */
+    .block-container {
+        padding-top: 1.4rem;
+        padding-bottom: 2.5rem;
+        max-width: 1280px;
+    }
+
+    /* Hero Banner */
+    .hero-banner {
+        background: linear-gradient(135deg, #064E3B 0%, #1B4332 55%, #2D6A4F 100%);
+        padding: 1.4rem 1.8rem;
+        border-radius: 14px;
+        color: #FFFFFF;
+        margin-bottom: 1.2rem;
+        box-shadow: 0 6px 18px rgba(6, 78, 59, 0.16);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .hero-title {
+        font-size: 1.75rem;
+        font-weight: 800;
+        margin: 0;
+        letter-spacing: -0.02em;
+        color: #FFFFFF;
+    }
+    .hero-sub {
+        font-size: 0.96rem;
+        color: #D1FAE5;
+        margin-top: 0.3rem;
+        margin-bottom: 0;
+    }
+
+    /* Step Section Headers */
+    .step-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 0.6rem;
+        margin-bottom: 0.6rem;
+    }
+    .step-badge {
+        background-color: #1B4332;
+        color: #FFFFFF;
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 3px 10px;
+        border-radius: 999px;
+        letter-spacing: 0.05em;
+    }
+    .step-title {
+        font-size: 1.25rem;
+        font-weight: 700;
+        margin: 0;
+    }
+
+    /* Elevated Metric Cards */
+    div[data-testid="stMetric"] {
+        background-color: rgba(248, 250, 252, 0.92);
+        border: 1px solid #CBD5E1;
+        border-left: 4px solid #10B981;
+        padding: 12px 14px;
+        border-radius: 10px;
+        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+    }
+    div[data-testid="stMetric"] label {
+        color: #475569 !important;
+        font-weight: 600 !important;
+        font-size: 0.82rem !important;
+    }
+    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+        color: #0F172A !important;
+        font-weight: 800 !important;
+        font-size: 1.35rem !important;
+    }
+
+    /* Primary Action Buttons */
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #059669 0%, #047857 100%);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 0.65rem 1.2rem;
+        font-weight: 700;
+        font-size: 1rem;
+        box-shadow: 0 4px 12px rgba(5, 150, 105, 0.25);
+        transition: all 0.2s ease;
+    }
+    .stButton > button[kind="primary"]:hover {
+        box-shadow: 0 6px 16px rgba(5, 150, 105, 0.35);
+        transform: translateY(-1px);
+    }
+
+    /* Download Buttons */
+    .stDownloadButton > button {
+        border-radius: 9px;
+        font-weight: 600;
+        border: 1px solid #10B981;
+    }
+
+    /* Expander Polish */
+    div[data-testid="stExpander"] {
+        border: 1px solid #CBD5E1;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+    }
+    </style>
+    <div class="hero-banner">
+        <div class="hero-title">🌱 SoilScout AI — Smart Precision Irrigation</div>
+        <p class="hero-sub">Field Moisture Zoning • Live Weather & Rain Advisor • Borewell & Drip Valve Scheduler</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 if "samples" not in st.session_state:
     st.session_state.samples = []
@@ -35,6 +152,51 @@ if "lat" in qp and "lon" in qp:
         st.session_state.gps_coords = (float(qp["lat"]), float(qp["lon"]))
     except ValueError:
         pass
+
+
+# ---------------- INDIAN SOIL PROFILES (COMPATIBLE WITH soil_zoning) ----------------
+class IndianSoilAdapter:
+    """Wraps a base texture from soil_zoning.py with Indian soil agronomic parameters."""
+    def __init__(self, label: str, base_key: str, field_capacity: float, wilting_point: float, desc: str):
+        keys = list(sz.TEXTURES.keys())
+        chosen_key = base_key if base_key in sz.TEXTURES else keys[0]
+        self._base = sz.TEXTURES[chosen_key]
+        self.label = label
+        self.field_capacity = field_capacity
+        self.wilting_point = wilting_point
+        self.desc = desc
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
+INDIAN_SOILS = {
+    "normal_alluvial": IndianSoilAdapter(
+        "Alluvial / Normal Farm Soil (Balanced Loam)", "loam", 36.0, 16.0,
+        "Balanced drainage and moisture retention; standard fertile Indian farmland."
+    ),
+    "mixed_soil": IndianSoilAdapter(
+        "Mixed Soil (Red & Black Soil Blend)", "clay_loam", 40.0, 19.0,
+        "Medium-heavy blend with good nutrient and moisture holding capacity."
+    ),
+    "red_loam": IndianSoilAdapter(
+        "Red Loamy Soil (Kempu Mannu)", "sandy_loam", 31.0, 14.0,
+        "Common across Karnataka & Deccan plateau; drains moderately fast."
+    ),
+    "black_cotton": IndianSoilAdapter(
+        "Black Cotton Soil (Regur / Heavy Clay)", "clay", 46.0, 23.0,
+        "Deep moisture retention; holds water long, avoid over-watering."
+    ),
+    "sandy_soil": IndianSoilAdapter(
+        "Sandy / Coastal Light Soil", "sand", 22.0, 9.0,
+        "Fast water drainage; requires smaller, more frequent irrigation cycles."
+    ),
+    "clay_lowland": IndianSoilAdapter(
+        "Clayey / Silty Lowland Soil", "silt_loam", 42.0, 20.0,
+        "Slow drainage and high water storage; ideal for paddy and sugarcane."
+    ),
+}
+
 
 # ---------------- INDIAN CROP CATEGORIES & AGRONOMIC PROFILES ----------------
 INDIAN_CROPS = {
@@ -78,6 +240,18 @@ INDIAN_CROPS = {
 
 
 # ---------------- HELPER FUNCTIONS ----------------
+def step_header(badge_text: str, title_text: str):
+    st.markdown(
+        f"""
+        <div class="step-header">
+            <span class="step-badge">{badge_text}</span>
+            <h3 class="step-title">{title_text}</h3>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def recommended_spot_count(length_m: float, width_m: float) -> int:
     hectares = (length_m * width_m) / 10000.0
     spots = int(round(6.5 + 3.4 * math.sqrt(hectares)))
@@ -285,8 +459,9 @@ def estimate_evapotranspiration_and_schedule(temp_c: float, rh: float, mean_mois
     }
 
 
-def parse_bluetooth_log(raw_bytes: bytes, suggested_pts: np.ndarray, default_temp: float, default_rh: float):
-    text = raw_bytes.decode("utf-8", errors="ignore")
+def parse_bluetooth_log(raw_input: bytes | str, suggested_pts: np.ndarray, default_temp: float, default_rh: float):
+    """Smart parser for both pasted text and uploaded files from Serial Bluetooth Terminal."""
+    text = raw_input.decode("utf-8", errors="ignore") if isinstance(raw_input, bytes) else str(raw_input)
     lines = text.splitlines()
     samples = []
 
@@ -389,7 +564,8 @@ def draw_walking_map(length_m: float, width_m: float, points: np.ndarray):
     return fig
 
 
-def extract_zone_summary(moisture: np.ndarray, cell_area_m2: float, texture, crop_cfg: dict, wx_multiplier: float):
+def extract_zone_summary(moisture: np.ndarray, cell_area_m2: float, total_area_m2: float,
+                         texture, crop_cfg: dict, wx_multiplier: float, pump_lpm: float, drip_lpm: float, pump_kw: float):
     fc = getattr(texture, "field_capacity", 38.0)
     wp = getattr(texture, "wilting_point", 18.0)
     root_depth = crop_cfg["root_depth_m"]
@@ -408,12 +584,17 @@ def extract_zone_summary(moisture: np.ndarray, cell_area_m2: float, texture, cro
 
     total_cells = moisture.size
     summary = []
+    max_deficit_pct = 0.0
+
     for label, color, mask in tiers:
         count = int(np.sum(mask))
         pct_area = 100.0 * count / total_cells
         area_m2 = count * cell_area_m2
         avg_m = float(np.mean(moisture[mask])) if count > 0 else 0.0
         deficit_pct = max(0.0, target_m - avg_m) if count > 0 else 0.0
+        if count > 0:
+            max_deficit_pct = max(max_deficit_pct, deficit_pct)
+
         base_liters = area_m2 * root_depth * (deficit_pct / 100.0) * 1000.0 / 0.85
         adj_liters = base_liters * wx_multiplier
         summary.append({
@@ -424,37 +605,62 @@ def extract_zone_summary(moisture: np.ndarray, cell_area_m2: float, texture, cro
             "avg_moisture": avg_m,
             "base_liters": base_liters,
             "liters": adj_liters,
+            "pump_time": format_runtime(adj_liters, pump_lpm),
+            "drip_time": format_runtime(adj_liters, drip_lpm),
         })
-    return summary, wp, fc, target_m, crit_thresh, warn_thresh, over_thresh
+
+    precision_liters = sum(r["liters"] for r in summary)
+    if max_deficit_pct > 0:
+        blind_base_liters = total_area_m2 * root_depth * (max_deficit_pct / 100.0) * 1000.0 / 0.85
+    else:
+        blind_base_liters = total_area_m2 * 0.025 * 1000.0
+
+    saved_liters = max(0.0, blind_base_liters - precision_liters)
+    saved_pct = (100.0 * saved_liters / blind_base_liters) if blind_base_liters > 0 else 0.0
+    saved_pump_hrs = saved_liters / (max(pump_lpm, 1.0) * 60.0)
+    saved_kwh = saved_pump_hrs * pump_kw
+    saved_time_str = format_runtime(saved_liters, pump_lpm)
+
+    roi = {
+        "blind_liters": blind_base_liters,
+        "precision_liters": precision_liters,
+        "saved_liters": saved_liters,
+        "saved_pct": saved_pct,
+        "saved_kwh": saved_kwh,
+        "saved_time_str": saved_time_str,
+    }
+    return summary, wp, fc, target_m, crit_thresh, warn_thresh, over_thresh, roi
 
 
 def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, info, texture,
-                               crop_name, crop_cfg, wx_multiplier, wx_headline, pump_lpm, drip_lpm, et_info):
+                               crop_name, crop_cfg, wx_multiplier, wx_headline, pump_lpm, drip_lpm, pump_kw, et_info):
     cell_area = (xc[1] - xc[0]) * (yc[1] - yc[0]) if len(xc) > 1 and len(yc) > 1 else 1.0
-    zone_rows, wp, fc, target_m, t1, t2, t3 = extract_zone_summary(moisture, cell_area, texture, crop_cfg, wx_multiplier)
-    total_liters = sum(r["liters"] for r in zone_rows)
     total_area_m2 = length_m * width_m
+    zone_rows, wp, fc, target_m, t1, t2, t3, roi = extract_zone_summary(
+        moisture, cell_area, total_area_m2, texture, crop_cfg, wx_multiplier, pump_lpm, drip_lpm, pump_kw
+    )
+    total_liters = roi["precision_liters"]
     equiv_mm = (total_liters / total_area_m2) if total_area_m2 > 0 else 0.0
 
     pump_time_str = format_runtime(total_liters, pump_lpm)
     drip_time_str = format_runtime(total_liters, drip_lpm)
 
-    fig = plt.figure(figsize=(15.5, 9.6), dpi=220)
+    fig = plt.figure(figsize=(16.0, 9.8), dpi=220)
     fig.patch.set_facecolor("#F8FAFC")
 
-    gs = fig.add_gridspec(2, 2, width_ratios=[1.60, 1.02], height_ratios=[0.88, 1.22],
-                          wspace=0.18, hspace=0.26, left=0.055, right=0.97, top=0.86, bottom=0.07)
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.52, 1.12], height_ratios=[0.82, 1.28],
+                          wspace=0.16, hspace=0.25, left=0.05, right=0.975, top=0.86, bottom=0.07)
 
-    fig.text(0.055, 0.948, "SOILSCOUT AI  |  PRECISION IRRIGATION & EVAPORATION SCHEDULE REPORT",
+    fig.text(0.05, 0.948, "SOILSCOUT AI  |  ZONE-BY-ZONE IRRIGATION & RESOURCE SAVINGS REPORT",
              fontsize=15, fontweight="bold", color="#0F172A")
     fig.text(
-        0.055, 0.918,
+        0.05, 0.918,
         f"Field: {length_m:,.0f}m × {width_m:,.0f}m ({total_area_m2/10000:,.2f} ha)   •   "
         f"Soil: {texture.label}   •   Crop: {crop_name} (Root {int(crop_cfg['root_depth_m']*100)} cm)",
         fontsize=10.0, color="#1E293B", fontweight="bold"
     )
     fig.text(
-        0.055, 0.892,
+        0.05, 0.892,
         f"Sensor Avg: {info['temp']:.1f}°C, {info['rh']:.0f}% RH   •   {wx_headline}",
         fontsize=9.5, color="#475569", fontweight="bold"
     )
@@ -478,15 +684,14 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
     valid_bounds = [b for b in [t1, t2, t3] if vmin < b < vmax]
     if valid_bounds:
         cs = ax_map.contour(xc, yc, moisture, levels=valid_bounds, colors="#0F172A",
-                            linewidths=1.4, linestyles="--", alpha=0.75)
-        ax_map.clabel(cs, inline=True, fontsize=8, fmt="%.0f%%")
+                            linewidths=1.8, linestyles="--", alpha=0.85)
+        ax_map.clabel(cs, inline=True, fontsize=8.5, fmt="%.0f%%")
 
     ax_map.grid(True, linestyle=":", alpha=0.35, color="#0F172A")
     for spine in ax_map.spines.values():
         spine.set_edgecolor("#CBD5E1")
         spine.set_linewidth(1.5)
 
-    # Anti-clutter sample badges
     dense = len(samples) > 18
     badge_font = 6.8 if dense else 8.0
     dot_size = 70 if dense else 95
@@ -501,20 +706,24 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
             zorder=7
         )
 
-    # Start Corner (0,0) Anchor & North Orientation Indicator
     ax_map.scatter([0], [0], s=140, marker="s", color="#DC2626", edgecolors="white", linewidth=1.5, zorder=8, clip_on=False)
     ax_map.annotate("🚩 Start (0,0)", xy=(0, 0), xytext=(6, 6), textcoords="offset points",
                     fontsize=8, fontweight="bold", color="#DC2626",
                     bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor="#FCA5A5", alpha=0.92), zorder=9)
-    ax_map.text(0.97, 0.96, "N ↑", transform=ax_map.transAxes, ha="right", va="top",
-                fontsize=9.5, fontweight="bold", color="#0F172A",
-                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#CBD5E1", alpha=0.92), zorder=9)
+
+    legend_handles = [
+        Patch(facecolor="#DC2626", label=f"Critical Dry (<{t1:.0f}%)"),
+        Patch(facecolor="#F59E0B", label=f"Needs Water ({t1:.0f}–{t2:.0f}%)"),
+        Patch(facecolor="#10B981", label=f"Optimal ({t2:.0f}–{t3:.0f}%)"),
+        Patch(facecolor="#2563EB", label=f"Over-Watered (>{t3:.0f}%)"),
+    ]
+    ax_map.legend(handles=legend_handles, loc="upper right", fontsize=7.8, framealpha=0.92, edgecolor="#CBD5E1")
 
     ax_map.set_xlim(0, length_m)
     ax_map.set_ylim(0, width_m)
     ax_map.set_xlabel("Field Length X (meters)", fontsize=10.5, fontweight="bold", color="#1E293B", labelpad=8)
     ax_map.set_ylabel("Field Width Y (meters)", fontsize=10.5, fontweight="bold", color="#1E293B", labelpad=8)
-    ax_map.set_title(f"Spatial Soil Moisture & {crop_name} Zone Boundaries",
+    ax_map.set_title(f"Spatial Soil Moisture & {crop_name} Zone Divisions",
                      fontsize=12, fontweight="bold", color="#0F172A", pad=10)
 
     cbar = fig.colorbar(cf, ax=ax_map, orientation="horizontal", fraction=0.046, pad=0.11, aspect=35)
@@ -524,7 +733,7 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
     if vmin <= target_m <= vmax:
         cbar.ax.axvline(target_m, color="#0F172A", linewidth=2.2)
 
-    # ---------------- TOP RIGHT: ZONE AREA DISTRIBUTION ----------------
+    # ---------------- TOP RIGHT: ZONE AREA & SAVINGS BANNER ----------------
     ax_bar = fig.add_subplot(gs[0, 1])
     ax_bar.set_facecolor("#FFFFFF")
     labels = [r["label"] for r in zone_rows][::-1]
@@ -532,21 +741,24 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
     colors = [r["color"] for r in zone_rows][::-1]
 
     bars = ax_bar.barh(labels, pcts, color=colors, height=0.55, edgecolor="none")
-    ax_bar.set_xlim(0, 115)
+    ax_bar.set_xlim(0, 118)
     ax_bar.grid(axis="x", linestyle="--", alpha=0.4, color="#CBD5E1")
-    ax_bar.set_xlabel("Share of Total Field Area (%)", fontsize=9.5, fontweight="bold", color="#334155")
-    ax_bar.set_title("Management Zone Coverage", fontsize=11.5, fontweight="bold", color="#0F172A", pad=10)
+    ax_bar.set_xlabel("Share of Total Field Area (%)", fontsize=9.2, fontweight="bold", color="#334155")
+    ax_bar.set_title(
+        f"Zone Coverage  •  Saved {roi['saved_pct']:.0f}% Water ({roi['saved_liters']:,.0f} L) & {roi['saved_kwh']:.1f} kWh",
+        fontsize=10.5, fontweight="bold", color="#047857", pad=10
+    )
 
     for bar, pct in zip(bars, pcts):
         ax_bar.text(pct + 2.0, bar.get_y() + bar.get_height() / 2, f"{pct:.1f}%",
-                    va="center", ha="left", fontsize=9.5, fontweight="bold", color="#1E293B")
+                    va="center", ha="left", fontsize=9.2, fontweight="bold", color="#1E293B")
 
     for spine in ["top", "right"]:
         ax_bar.spines[spine].set_visible(False)
     ax_bar.spines["left"].set_color("#CBD5E1")
     ax_bar.spines["bottom"].set_color("#CBD5E1")
 
-    # ---------------- BOTTOM RIGHT: IRRIGATION, RUNTIME & NEXT WATERING ----------------
+    # ---------------- BOTTOM RIGHT: ZONE-BY-ZONE VALVE RUNTIME & SCHEDULE ----------------
     ax_card = fig.add_subplot(gs[1, 1])
     ax_card.set_facecolor("#FFFFFF")
     ax_card.set_xticks([])
@@ -555,53 +767,57 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
         spine.set_edgecolor("#CBD5E1")
         spine.set_linewidth(1.5)
 
-    ax_card.text(0.05, 0.92, f"Irrigation Plan & Schedule ({crop_name})",
-                 fontsize=11.2, fontweight="bold", color="#0F172A", transform=ax_card.transAxes)
+    ax_card.text(0.04, 0.93, f"Zone-by-Zone Water & Valve Runtime ({crop_name})",
+                 fontsize=10.8, fontweight="bold", color="#0F172A", transform=ax_card.transAxes)
 
-    y_pos = 0.80
+    ax_card.text(0.04, 0.85, "ZONE (AREA)", fontsize=8.0, fontweight="bold", color="#64748B", transform=ax_card.transAxes)
+    ax_card.text(0.54, 0.85, "WATER", fontsize=8.0, fontweight="bold", color="#64748B", ha="right", transform=ax_card.transAxes)
+    ax_card.text(0.75, 0.85, "PUMP", fontsize=8.0, fontweight="bold", color="#64748B", ha="right", transform=ax_card.transAxes)
+    ax_card.text(0.96, 0.85, "DRIP", fontsize=8.0, fontweight="bold", color="#64748B", ha="right", transform=ax_card.transAxes)
+
+    y_pos = 0.76
     for r in zone_rows:
-        ax_card.scatter([0.07], [y_pos + 0.012], s=80, color=r["color"], transform=ax_card.transAxes)
-        ax_card.text(0.12, y_pos, f"{r['label']} ({r['area_m2']:,.0f} m²)",
-                     fontsize=9.0, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
-        water_txt = f"{r['liters']:,.0f} L" if r["liters"] > 0 else "0 L (Skip)"
-        ax_card.text(0.95, y_pos, water_txt, fontsize=9.0, fontweight="bold",
-                     color="#0F172A", ha="right", transform=ax_card.transAxes)
-        y_pos -= 0.105
+        ax_card.scatter([0.055], [y_pos + 0.012], s=70, color=r["color"], transform=ax_card.transAxes)
+        ax_card.text(0.095, y_pos, f"{r['label']} ({r['pct_area']:.0f}%)",
+                     fontsize=8.6, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
+        water_txt = f"{r['liters']:,.0f} L" if r["liters"] > 0 else "0 L"
+        p_txt = r["pump_time"].replace(" (Skip)", "") if r["liters"] > 0 else "Skip"
+        d_txt = r["drip_time"].replace(" (Skip)", "") if r["liters"] > 0 else "Skip"
 
-    ax_card.plot([0.05, 0.95], [0.38, 0.38], color="#E2E8F0", linewidth=1.2, transform=ax_card.transAxes)
+        ax_card.text(0.54, y_pos, water_txt, fontsize=8.5, fontweight="bold", color="#0F172A", ha="right", transform=ax_card.transAxes)
+        ax_card.text(0.75, y_pos, p_txt, fontsize=8.5, fontweight="bold", color="#1D4ED8", ha="right", transform=ax_card.transAxes)
+        ax_card.text(0.96, y_pos, d_txt, fontsize=8.5, fontweight="bold", color="#0369A1", ha="right", transform=ax_card.transAxes)
+        y_pos -= 0.095
 
-    ax_card.text(0.05, 0.31, f"TOTAL WATER ({equiv_mm:.1f} mm):",
-                 fontsize=8.8, fontweight="bold", color="#475569", transform=ax_card.transAxes)
-    ax_card.text(0.95, 0.31, f"{total_liters:,.0f} Liters",
-                 fontsize=10.2, fontweight="bold", color="#047857", ha="right", transform=ax_card.transAxes)
+    ax_card.plot([0.04, 0.96], [0.36, 0.36], color="#E2E8F0", linewidth=1.2, transform=ax_card.transAxes)
 
-    ax_card.text(0.05, 0.23, f"⚡ Borewell ({pump_lpm:.0f} L/min):",
-                 fontsize=8.8, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
-    ax_card.text(0.95, 0.23, pump_time_str,
-                 fontsize=9.2, fontweight="bold", color="#1D4ED8", ha="right", transform=ax_card.transAxes)
+    ax_card.text(0.04, 0.295, f"TOTAL PRECISION WATER ({equiv_mm:.1f} mm):",
+                 fontsize=8.6, fontweight="bold", color="#475569", transform=ax_card.transAxes)
+    ax_card.text(0.96, 0.295, f"{total_liters:,.0f} L  (Pump: {pump_time_str} | Drip: {drip_time_str})",
+                 fontsize=8.6, fontweight="bold", color="#047857", ha="right", transform=ax_card.transAxes)
 
-    ax_card.text(0.05, 0.16, f"💧 Drip ({drip_lpm:.0f} L/min):",
-                 fontsize=8.8, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
-    ax_card.text(0.95, 0.16, drip_time_str,
-                 fontsize=9.2, fontweight="bold", color="#0369A1", ha="right", transform=ax_card.transAxes)
+    ax_card.text(0.04, 0.22, "💰 SAVED VS. FULL-FIELD WATERING:",
+                 fontsize=8.6, fontweight="bold", color="#065F46", transform=ax_card.transAxes)
+    ax_card.text(0.96, 0.22, f"{roi['saved_liters']:,.0f} L ({roi['saved_pct']:.0f}%)  •  {roi['saved_kwh']:.1f} kWh ({roi['saved_time_str']})",
+                 fontsize=8.6, fontweight="bold", color="#047857", ha="right", transform=ax_card.transAxes)
 
-    ax_card.plot([0.05, 0.95], [0.12, 0.12], color="#E2E8F0", linewidth=1.2, transform=ax_card.transAxes)
+    ax_card.plot([0.04, 0.96], [0.16, 0.16], color="#E2E8F0", linewidth=1.2, transform=ax_card.transAxes)
 
-    ax_card.text(0.05, 0.065, "☀️ Evaporation Rate:",
-                 fontsize=8.8, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
-    ax_card.text(0.95, 0.065, f"{et_info['etc_mm']:.1f} mm/day (-{et_info['daily_loss_pct']:.1f}%/day)",
-                 fontsize=8.8, fontweight="bold", color="#B45309", ha="right", transform=ax_card.transAxes)
+    ax_card.text(0.04, 0.095, "☀️ Evaporation Rate:",
+                 fontsize=8.6, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
+    ax_card.text(0.96, 0.095, f"{et_info['etc_mm']:.1f} mm/day (-{et_info['daily_loss_pct']:.1f}%/day)",
+                 fontsize=8.6, fontweight="bold", color="#B45309", ha="right", transform=ax_card.transAxes)
 
-    ax_card.text(0.05, 0.015, "📅 Next Watering:",
-                 fontsize=8.8, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
-    ax_card.text(0.95, 0.015, et_info["report_line"],
-                 fontsize=8.5, fontweight="bold", color="#0F766E", ha="right", transform=ax_card.transAxes)
+    ax_card.text(0.04, 0.03, "📅 Next Watering:",
+                 fontsize=8.6, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
+    ax_card.text(0.96, 0.03, et_info["report_line"],
+                 fontsize=8.4, fontweight="bold", color="#0F766E", ha="right", transform=ax_card.transAxes)
 
-    return fig, total_liters, equiv_mm, zone_rows, pump_time_str, drip_time_str
+    return fig, total_liters, equiv_mm, zone_rows, pump_time_str, drip_time_str, roi
 
 
 # ---------------- COLLAPSIBLE DROPDOWN: ENTER FIELD, CROP & PUMP DETAILS ----------------
-with st.expander("📝 Enter Field, Crop & Pump Details (Tap to Open / Close)", expanded=False):
+with st.expander("⚙️ Enter Field, Soil, Crop & Pump Details (Tap to Open / Close)", expanded=False):
     col_f1, col_f2, col_f3 = st.columns(3)
 
     with col_f1:
@@ -677,12 +893,14 @@ with st.expander("📝 Enter Field, Crop & Pump Details (Tap to Open / Close)", 
         st.caption(f"Total Area: **{length * width:,.0f} m²** ({area_ha:,.2f} hectares)")
 
     with col_f2:
-        st.markdown("**2. Soil & Crop Selection**")
+        st.markdown("**2. Indian Soil & Crop Selection**")
         soil_choice = st.selectbox(
-            "Soil Texture",
-            options=list(sz.TEXTURES.keys()),
-            format_func=lambda k: sz.TEXTURES[k].label
+            "Soil Type",
+            options=list(INDIAN_SOILS.keys()),
+            format_func=lambda k: INDIAN_SOILS[k].label
         )
+        st.caption(f"🪨 {INDIAN_SOILS[soil_choice].desc}")
+
         crop_category = st.selectbox("Crop Category", options=list(INDIAN_CROPS.keys()))
         crop_name = st.selectbox("Select Crop / Plant", options=list(INDIAN_CROPS[crop_category].keys()))
         crop_cfg = INDIAN_CROPS[crop_category][crop_name]
@@ -696,12 +914,16 @@ with st.expander("📝 Enter Field, Crop & Pump Details (Tap to Open / Close)", 
         )
         if "5 HP" in pump_preset:
             pump_lpm = 400.0
+            pump_kw = 4.4
         elif "3 HP" in pump_preset:
             pump_lpm = 250.0
+            pump_kw = 2.6
         elif "7.5 HP" in pump_preset:
             pump_lpm = 600.0
+            pump_kw = 6.5
         else:
             pump_lpm = st.number_input("Custom Pump Flow (Liters/min)", min_value=10.0, max_value=5000.0, value=400.0, step=25.0)
+            pump_kw = (pump_lpm / 400.0) * 4.4
 
         drip_lpm = st.number_input("Drip System Flow (Liters/min)", min_value=10.0, max_value=3000.0, value=150.0, step=10.0,
                                    help="Typical field drip lateral delivery is 100–250 L/min depending on emitter count.")
@@ -714,7 +936,7 @@ with st.expander("📝 Enter Field, Crop & Pump Details (Tap to Open / Close)", 
     st.markdown("**4. Sensor Connection Mode**")
     mode = st.radio(
         "How are you collecting data?",
-        ["Upload CSV / Bluetooth Log", "Live Bluetooth Wand (HC-05)", "Offline Demo Simulator"],
+        ["Phone Bluetooth Log (Paste / Upload)", "Live Bluetooth Wand (HC-05)", "Offline Demo Simulator"],
         horizontal=True
     )
 
@@ -736,7 +958,7 @@ with st.expander("📝 Enter Field, Crop & Pump Details (Tap to Open / Close)", 
                 st.info("Disconnected")
 
 field = sz.FieldSpec(length, width)
-texture = sz.TEXTURES[soil_choice]
+texture = INDIAN_SOILS[soil_choice]
 suggested = generate_serpentine_points(length, width, n_spots)
 
 # ---------------- LIVE WEATHER BANNER (GPS OR TYPED CITY) ----------------
@@ -751,7 +973,7 @@ wx_mult, wx_status, wx_title, wx_desc = evaluate_weather_advice(wx_data)
 
 if wx_data:
     w_col1, w_col2, w_col3, w_col4 = st.columns(4)
-    w_col1.metric("📍 Location", wx_data["location"])
+    w_col1.metric("📍 Farm Location", wx_data["location"])
     w_col2.metric("🌡️ Live Temp / Peak", f"{wx_data['temp_now']:.1f}°C", f"Today Max: {wx_data['temp_max']:.1f}°C")
     w_col3.metric("💧 Air Humidity", f"{wx_data['rh_now']:.0f}%")
     w_col4.metric("🌧️ 24h Rain Forecast", f"{wx_data['rain_prob']}%", f"Expected: {wx_data['rain_mm']:.1f} mm")
@@ -766,7 +988,8 @@ else:
     st.info(f"**{wx_title}** — {wx_desc}")
 
 # ---------------- STEP 1: VISUAL WALKING MAP & COORDINATES ----------------
-st.subheader("Step 1: Field Walking Map & Checkpoints")
+st.divider()
+step_header("STEP 1", "Field Walking Map & Checkpoints")
 map_col, table_col = st.columns([1.45, 1])
 
 with map_col:
@@ -784,25 +1007,42 @@ with table_col:
     sug_df.index = [f"Spot {i+1}" for i in range(len(sug_df))]
     st.dataframe(sug_df.style.format("{:.1f}"), use_container_width=True, height=360)
 
-# ---------------- STEP 2: RECORD OR UPLOAD READINGS ----------------
+# ---------------- STEP 2: PASTE OR UPLOAD READINGS ----------------
 st.divider()
-st.subheader("Step 2: Upload Phone Log or Record Readings")
+step_header("STEP 2", "Paste or Upload Wand Readings")
 
 idx = min(len(st.session_state.samples), len(suggested) - 1)
 default_x, default_y = float(suggested[idx][0]), float(suggested[idx][1])
 
-if mode == "Upload CSV / Bluetooth Log":
-    st.info("Upload your raw log saved from **Serial Bluetooth Terminal** (`.csv` or `.txt`). Timestamps and status lines are automatically cleaned!")
-    uploaded = st.file_uploader("Choose your field log file", type=["csv", "txt", "log"])
-    if uploaded is not None:
-        def_t = wx_data["temp_now"] if wx_data else 28.0
-        def_h = wx_data["rh_now"] if wx_data else 55.0
-        parsed = parse_bluetooth_log(uploaded.getvalue(), suggested, def_t, def_h)
-        if parsed:
-            st.session_state.samples = parsed
-            st.success(f"Cleaned and matched {len(parsed)} sensor readings to your field map!")
-        else:
-            st.error("No valid sensor readings found in that file. Make sure it contains lines like `1,42.5,29.0,54.0`.")
+if mode == "Phone Bluetooth Log (Paste / Upload)":
+    tab_paste, tab_file = st.tabs(["📋 Paste Bluetooth Text (Fastest)", "📁 Upload CSV / TXT File"])
+    def_t = wx_data["temp_now"] if wx_data else 28.0
+    def_h = wx_data["rh_now"] if wx_data else 55.0
+
+    with tab_paste:
+        st.caption("Copy the readings directly from **Serial Bluetooth Terminal** and paste below—timestamps and connection messages are cleaned automatically.")
+        pasted_text = st.text_area(
+            "Paste copied Bluetooth log here:",
+            height=130,
+            placeholder="Example:\n10:14:02 Connected to HC-05\n10:14:15 1,24.5,31.2,48.0\n10:15:02 2,36.8,31.0,49.0\n10:15:48 3,41.2,30.8,50.0"
+        )
+        if pasted_text.strip():
+            parsed_paste = parse_bluetooth_log(pasted_text, suggested, def_t, def_h)
+            if parsed_paste:
+                st.session_state.samples = parsed_paste
+                st.success(f"Cleaned and matched {len(parsed_paste)} readings from pasted text!")
+            else:
+                st.warning("Could not find valid sensor numbers in the pasted text yet.")
+
+    with tab_file:
+        uploaded = st.file_uploader("Choose your saved field log file (.csv or .txt)", type=["csv", "txt", "log"])
+        if uploaded is not None:
+            parsed_file = parse_bluetooth_log(uploaded.getvalue(), suggested, def_t, def_h)
+            if parsed_file:
+                st.session_state.samples = parsed_file
+                st.success(f"Cleaned and matched {len(parsed_file)} sensor readings from file!")
+            else:
+                st.error("No valid sensor readings found in that file.")
 
 elif mode == "Live Bluetooth Wand (HC-05)":
     c_x, c_y = st.columns(2)
@@ -811,7 +1051,7 @@ elif mode == "Live Bluetooth Wand (HC-05)":
 
     if st.button("📡 Trigger Wand & Save Reading", type="primary", use_container_width=True):
         if st.session_state.bt_conn is None:
-            st.warning("Open 'Enter Field, Crop & Pump Details' at the top and click 'Connect' first!")
+            st.warning("Open 'Enter Field, Soil, Crop & Pump Details' at the top and click 'Connect' first!")
         else:
             smp = st.session_state.bt_conn.read_sample(cur_x, cur_y)
             if smp:
@@ -836,15 +1076,15 @@ if st.session_state.samples:
         st.session_state.samples = []
         st.rerun()
 
-# ---------------- STEP 3: GENERATE PREMIUM AI MAP & SCHEDULE ----------------
+# ---------------- STEP 3: GENERATE PREMIUM AI MAP, SAVINGS & ZONE SCHEDULE ----------------
 st.divider()
-st.subheader("Step 3: Precision AI Irrigation, Evaporation & Next Watering Schedule")
+step_header("STEP 3", "Zone-by-Zone Irrigation, Savings & Schedule")
 
 if len(st.session_state.samples) < 3:
-    st.info("Record or upload at least **3 samples** to generate the irrigation zoning map.")
+    st.info("Paste, upload, or record at least **3 samples** to generate the irrigation zoning map.")
 else:
-    if st.button("🗺️ Generate Precision Zoning & Schedule Report", type="primary", use_container_width=True):
-        with st.spinner("Running Spatial AI, Evapotranspiration & Schedule Calculation..."):
+    if st.button("🗺️ Generate Zone-by-Zone Map & Savings Report", type="primary", use_container_width=True):
+        with st.spinner("Calculating Zone Water, Pump Runtimes & Resource Savings..."):
             clean_samples = sz.sanitize_samples(st.session_state.samples, field)
             model = sz.HybridMoistureModel(field, model="auto").fit(clean_samples)
 
@@ -867,30 +1107,49 @@ else:
                 info["temp"], info["rh"], info["mean_moisture"], texture, crop_cfg, wx_data
             )
 
-            fig, total_liters, equiv_mm, zone_rows, pump_str, drip_str = draw_premium_zoning_report(
+            fig, total_liters, equiv_mm, zone_rows, pump_str, drip_str, roi = draw_premium_zoning_report(
                 length, width, xc, yc, moisture, clean_samples, info, texture,
-                crop_name, crop_cfg, wx_mult, wx_title, pump_lpm, drip_lpm, et_info
+                crop_name, crop_cfg, wx_mult, wx_title, pump_lpm, drip_lpm, pump_kw, et_info
             )
 
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Avg Soil Moisture", f"{info['mean_moisture']:.1f}%",
-                      f"Range: {info['min_moisture']:.0f}% – {info['max_moisture']:.0f}%")
-            k2.metric(f"{crop_name} Water Need", f"{total_liters:,.0f} L",
-                      "Hold for rain" if wx_mult == 0 else f"~{equiv_mm:.1f} mm depth across field")
-            k3.metric(f"⚡ Borewell ({pump_lpm:.0f} L/m)", pump_str, "Direct pump runtime")
-            k4.metric(f"💧 Drip ({drip_lpm:.0f} L/m)", drip_str, "Drip valve runtime")
+            # Row 1: Water & Electricity Savings ROI Strip
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("💧 Water Saved vs. Uniform", f"{roi['saved_liters']:,.0f} L",
+                      f"{roi['saved_pct']:.1f}% less water used")
+            s2.metric("⚡ Electricity Saved", f"{roi['saved_kwh']:.1f} kWh",
+                      f"Pump time saved: {roi['saved_time_str']}")
+            s3.metric(f"Total {crop_name} Water", f"{total_liters:,.0f} L",
+                      "Hold for rain" if wx_mult == 0 else f"~{equiv_mm:.1f} mm avg depth")
+            s4.metric("📅 Next Watering Day", et_info["headline"], et_info["subtext"])
 
-            e1, e2, e3 = st.columns(3)
-            e1.metric("☀️ Crop Evaporation (ETc)", f"{et_info['etc_mm']:.1f} mm / day",
-                      f"Ref ET₀: {et_info['et0_mm']:.1f} mm/day | VPD: {et_info['vpd']:.2f} kPa")
-            e2.metric("📉 Soil Dry-Down Rate", f"-{et_info['daily_loss_pct']:.1f}% / day",
-                      f"Across {int(crop_cfg['root_depth_m']*100)} cm root depth")
-            e3.metric("📅 Next Watering Day", et_info["headline"], et_info["subtext"])
+            # Row 2: Evaporation & Total Runtime Strip
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("Avg Soil Moisture", f"{info['mean_moisture']:.1f}%",
+                      f"Range: {info['min_moisture']:.0f}% – {info['max_moisture']:.0f}%")
+            e2.metric("☀️ Crop Evaporation (ETc)", f"{et_info['etc_mm']:.1f} mm / day",
+                      f"Dry-down: -{et_info['daily_loss_pct']:.1f}% / day")
+            e3.metric(f"⚡ Total Borewell ({pump_lpm:.0f} L/m)", pump_str, "Combined across dry zones")
+            e4.metric(f"💧 Total Drip ({drip_lpm:.0f} L/m)", drip_str, "Combined across dry zones")
+
+            # Zone-by-Zone Valve Runtime Table
+            st.markdown("#### 🚰 Zone-by-Zone Water & Valve Runtime Schedule")
+            zone_table = pd.DataFrame([
+                {
+                    "Management Zone": r["label"],
+                    "Field Share": f"{r['pct_area']:.1f}% ({r['area_m2']:,.0f} m²)",
+                    "Avg Moisture": f"{r['avg_moisture']:.1f}%" if r["pct_area"] > 0 else "—",
+                    "Water Needed": f"{r['liters']:,.0f} L" if r["liters"] > 0 else "0 L (Skip)",
+                    f"⚡ Borewell Pump ({pump_lpm:.0f} L/m)": r["pump_time"],
+                    f"💧 Drip Valve ({drip_lpm:.0f} L/m)": r["drip_time"],
+                }
+                for r in zone_rows
+            ])
+            st.dataframe(zone_table, use_container_width=True, hide_index=True)
 
             st.pyplot(fig, use_container_width=True)
 
             buf = io.BytesIO()
             fig.savefig(buf, format="png", dpi=260)
             plt.close(fig)
-            st.download_button("📥 Download Full Irrigation & Schedule Report (PNG)", buf.getvalue(),
+            st.download_button("📥 Download Full Zone-by-Zone & Savings Report (PNG)", buf.getvalue(),
                                file_name="soilscout_precision_report.png", mime="image/png", use_container_width=True)
