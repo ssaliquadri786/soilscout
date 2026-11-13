@@ -25,10 +25,39 @@ if "bt_conn" not in st.session_state:
 
 # ---------------- HELPER FUNCTIONS ----------------
 def recommended_spot_count(length_m: float, width_m: float) -> int:
-    """Scales checkpoint count smoothly with field area (hectares)."""
+    """
+    Scales checkpoint count smoothly with field area:
+    - 60x40m (0.24 ha)   -> 8 spots
+    - 250x250m (6.25 ha) -> 15 spots
+    - 500x500m (25 ha)   -> 24 spots
+    - >= 75 ha           -> capped at 35 spots
+    """
     hectares = (length_m * width_m) / 10000.0
-    spots = int(round(6 + 4.0 * math.sqrt(hectares)))
-    return max(5, min(30, spots))
+    spots = int(round(6.5 + 3.4 * math.sqrt(hectares)))
+    return max(5, min(35, spots))
+
+
+def generate_serpentine_points(length_m: float, width_m: float, n_spots: int) -> np.ndarray:
+    """Generates exact n_spots arranged in an optimal zig-zag walking path across the field."""
+    n = max(3, min(35, int(n_spots)))
+    aspect = width_m / max(length_m, 1.0)
+    n_rows = int(round(math.sqrt(n * aspect)))
+    n_rows = max(2, min(n, n_rows))
+
+    base_cols, extra = divmod(n, n_rows)
+    points = []
+
+    for r in range(n_rows):
+        cols_in_row = base_cols + (1 if r < extra else 0)
+        y = width_m * (r + 0.5) / n_rows
+        row_xs = [length_m * (c + 0.5) / cols_in_row for c in range(cols_in_row)]
+        # Reverse every odd row for continuous zig-zag walking without backtracking
+        if r % 2 == 1:
+            row_xs.reverse()
+        for x in row_xs:
+            points.append([round(x, 1), round(y, 1)])
+
+    return np.array(points, dtype=float)
 
 
 def format_runtime(liters: float, flow_lpm: float) -> str:
@@ -142,9 +171,7 @@ def parse_bluetooth_log(raw_bytes: bytes, suggested_pts: np.ndarray, default_tem
     lines = text.splitlines()
     samples = []
 
-    # Regex strips leading timestamps like "10:14:22 " or "2026-11-13 10:14:22.120 "
     ts_pattern = re.compile(r"^\s*(?:\d{4}[-/]\d{2}[-/]\d{2}\s+)?\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*[-:>]*\s*")
-    # Matches comma/semicolon/tab separated numbers
     num_pattern = re.compile(r"[-+]?\d*\.?\d+")
 
     for raw_line in lines:
@@ -153,7 +180,6 @@ def parse_bluetooth_log(raw_bytes: bytes, suggested_pts: np.ndarray, default_tem
             continue
 
         lower = cleaned.lower()
-        # Skip header lines or Bluetooth terminal status messages
         if any(word in lower for word in ["moisture", "connect", "disconnect", "pong", "ok,", "err,", "bluetooth", "terminal"]):
             continue
 
@@ -163,16 +189,13 @@ def parse_bluetooth_log(raw_bytes: bytes, suggested_pts: np.ndarray, default_tem
 
         idx = len(samples)
         if len(nums) >= 5:
-            # Format: x, y, moisture, temp_c, rh
             px, py, moist, t_c, rh = nums[0], nums[1], nums[2], nums[3], nums[4]
         elif len(nums) == 4:
-            # Format: spot, moisture, temp_c, rh
             spot_num = int(round(nums[0])) - 1
             spot_idx = max(0, min(len(suggested_pts) - 1, spot_num if spot_num >= 0 else idx))
             px, py = float(suggested_pts[spot_idx][0]), float(suggested_pts[spot_idx][1])
             moist, t_c, rh = nums[1], nums[2], nums[3]
         elif len(nums) == 3:
-            # Format: spot, moisture, temp_c  OR  moisture, temp_c, rh
             if nums[0] == float(idx + 1) and nums[0] <= 50:
                 spot_idx = max(0, min(len(suggested_pts) - 1, idx))
                 px, py = float(suggested_pts[spot_idx][0]), float(suggested_pts[spot_idx][1])
@@ -182,17 +205,14 @@ def parse_bluetooth_log(raw_bytes: bytes, suggested_pts: np.ndarray, default_tem
                 px, py = float(suggested_pts[spot_idx][0]), float(suggested_pts[spot_idx][1])
                 moist, t_c, rh = nums[0], nums[1], nums[2]
         elif len(nums) == 2:
-            # Format: spot, moisture
             spot_idx = max(0, min(len(suggested_pts) - 1, idx))
             px, py = float(suggested_pts[spot_idx][0]), float(suggested_pts[spot_idx][1])
             moist, t_c, rh = nums[1], default_temp, default_rh
         else:
-            # Single number: moisture only
             spot_idx = max(0, min(len(suggested_pts) - 1, idx))
             px, py = float(suggested_pts[spot_idx][0]), float(suggested_pts[spot_idx][1])
             moist, t_c, rh = nums[0], default_temp, default_rh
 
-        # Sanity clamp physical bounds
         moist = max(0.0, min(100.0, moist))
         t_c = max(-10.0, min(65.0, t_c))
         rh = max(0.0, min(100.0, rh))
@@ -216,17 +236,19 @@ def draw_walking_map(length_m: float, width_m: float, points: np.ndarray):
     ax.grid(True, linestyle="--", alpha=0.35, color="#64748B", zorder=2)
 
     xs, ys = points[:, 0], points[:, 1]
-    ax.plot(xs, ys, linestyle="--", color="#D97706", linewidth=2.0, zorder=3)
+    ax.plot(xs, ys, linestyle="--", color="#D97706", linewidth=1.8, zorder=3)
     for i in range(len(points) - 1):
         ax.annotate(
             "", xy=(xs[i + 1], ys[i + 1]), xytext=(xs[i], ys[i]),
-            arrowprops=dict(arrowstyle="->", color="#D97706", lw=1.6, shrinkA=9, shrinkB=9),
+            arrowprops=dict(arrowstyle="->", color="#D97706", lw=1.4, shrinkA=8, shrinkB=8),
             zorder=3
         )
 
-    ax.scatter(xs, ys, s=300, color="#1B4332", edgecolors="white", linewidth=2.0, zorder=4)
+    marker_size = 220 if len(points) > 20 else 300
+    font_size = 7.5 if len(points) > 20 else 8.5
+    ax.scatter(xs, ys, s=marker_size, color="#1B4332", edgecolors="white", linewidth=1.8, zorder=4)
     for i, (x, y) in enumerate(points):
-        ax.text(x, y, str(i + 1), color="white", fontsize=8.5, fontweight="bold",
+        ax.text(x, y, str(i + 1), color="white", fontsize=font_size, fontweight="bold",
                 ha="center", va="center", zorder=5)
 
     ax.scatter([0], [0], s=200, marker="s", color="#DC2626", edgecolors="white", linewidth=1.5, zorder=6)
@@ -240,7 +262,7 @@ def draw_walking_map(length_m: float, width_m: float, points: np.ndarray):
     ax.set_xlabel("Field Length X (meters)", fontsize=10, fontweight="bold", color="#1E293B")
     ax.set_ylabel("Field Width Y (meters)", fontsize=10, fontweight="bold", color="#1E293B")
     ax.set_title(
-        f"Field Sampling Guide  •  {length_m:.0f}m × {width_m:.0f}m  ({len(points)} Checkpoints)",
+        f"Field Sampling Guide  •  {length_m:,.0f}m × {width_m:,.0f}m  ({len(points)} Checkpoints)",
         fontsize=12.5, fontweight="bold", color="#0F172A", pad=12
     )
     for spine in ["top", "right"]:
@@ -304,7 +326,7 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
              fontsize=15, fontweight="bold", color="#0F172A")
     fig.text(
         0.055, 0.915,
-        f"Field: {length_m:.0f}m × {width_m:.0f}m ({(length_m * width_m)/10000:.2f} ha)   •   "
+        f"Field: {length_m:,.0f}m × {width_m:,.0f}m ({(length_m * width_m)/10000:,.2f} ha)   •   "
         f"Soil: {texture.label}   •   Sensor Avg: {info['temp']:.1f}°C, {info['rh']:.0f}% RH   •   "
         f"{wx_headline}",
         fontsize=9.8, color="#334155", fontweight="bold"
@@ -340,13 +362,14 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
         spine.set_edgecolor("#CBD5E1")
         spine.set_linewidth(1.5)
 
+    badge_font = 7.0 if len(samples) > 20 else 8.0
     for i, s in enumerate(samples):
-        ax_map.scatter([s.x], [s.y], s=110, color="#0F172A", edgecolors="white", linewidth=1.8, zorder=6)
+        ax_map.scatter([s.x], [s.y], s=95, color="#0F172A", edgecolors="white", linewidth=1.6, zorder=6)
         ax_map.annotate(
             f"S{i+1}: {s.moisture:.0f}%",
-            xy=(s.x, s.y), xytext=(0, 9), textcoords="offset points",
-            ha="center", va="bottom", fontsize=8, fontweight="bold", color="#0F172A",
-            bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor="#94A3B8", alpha=0.92),
+            xy=(s.x, s.y), xytext=(0, 8), textcoords="offset points",
+            ha="center", va="bottom", fontsize=badge_font, fontweight="bold", color="#0F172A",
+            bbox=dict(boxstyle="round,pad=0.20", facecolor="white", edgecolor="#94A3B8", alpha=0.92),
             zorder=7
         )
 
@@ -433,7 +456,7 @@ with st.sidebar:
     width = st.number_input("Field Width Y (meters)", min_value=5.0, max_value=10000.0, value=40.0, step=10.0)
 
     area_ha = (length * width) / 10000.0
-    st.caption(f"Total Area: **{length * width:,.0f} m²** ({area_ha:.2f} hectares)")
+    st.caption(f"Total Area: **{length * width:,.0f} m²** ({area_ha:,.2f} hectares)")
 
     soil_choice = st.selectbox(
         "Soil Texture",
@@ -443,7 +466,7 @@ with st.sidebar:
 
     auto_spots = recommended_spot_count(length, width)
     use_auto = st.checkbox(f"Auto-scale checkpoints by area ({auto_spots} spots)", value=True)
-    n_spots = auto_spots if use_auto else st.slider("Manual Checkpoint Count", min_value=5, max_value=40, value=auto_spots)
+    n_spots = auto_spots if use_auto else st.slider("Manual Checkpoint Count", min_value=5, max_value=35, value=auto_spots)
 
     st.divider()
     st.header("2. Pump & Drip Flow Rates")
@@ -489,7 +512,7 @@ with st.sidebar:
 
 field = sz.FieldSpec(length, width)
 texture = sz.TEXTURES[soil_choice]
-suggested = sz.recommend_sampling_points(field, n_spots)
+suggested = generate_serpentine_points(length, width, n_spots)
 
 # ---------------- LIVE WEATHER BANNER ----------------
 wx_data = fetch_live_weather(city_input)
@@ -614,7 +637,6 @@ else:
                 wx_mult, wx_title, pump_lpm, drip_lpm
             )
 
-            # Top KPI & Equipment Runtime Strip
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Avg Soil Moisture", f"{info['mean_moisture']:.1f}%",
                       f"Range: {info['min_moisture']:.0f}% – {info['max_moisture']:.0f}%")
