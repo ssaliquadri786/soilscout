@@ -4,6 +4,7 @@ import json
 import math
 import urllib.request
 import urllib.parse
+from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -23,55 +24,50 @@ if "bt_conn" not in st.session_state:
     st.session_state.bt_conn = None
 
 # ---------------- INDIAN CROP CATEGORIES & AGRONOMIC PROFILES ----------------
+# kc = Crop Evapotranspiration Coefficient (higher = faster water loss through leaves)
 INDIAN_CROPS = {
     "🌾 Cereals & Millets": {
-        "Paddy (Rice)": {"root_depth_m": 0.20, "target_fc_ratio": 1.05, "notes": "Shallow 20 cm roots; requires high moisture / near-saturation."},
-        "Wheat": {"root_depth_m": 0.35, "target_fc_ratio": 0.80, "notes": "35 cm root zone; moderate moisture, avoid waterlogging."},
-        "Maize (Corn)": {"root_depth_m": 0.35, "target_fc_ratio": 0.82, "notes": "35 cm root zone; sensitive to dry spells during flowering."},
-        "Ragi (Finger Millet)": {"root_depth_m": 0.25, "target_fc_ratio": 0.70, "notes": "Hardy millet; thrives in lower soil moisture."},
-        "Jowar (Sorghum)": {"root_depth_m": 0.30, "target_fc_ratio": 0.68, "notes": "Drought-tolerant; low irrigation demand."},
-        "Bajra (Pearl Millet)": {"root_depth_m": 0.30, "target_fc_ratio": 0.65, "notes": "Very low water need; ideal for dryland conditions."},
+        "Paddy (Rice)": {"root_depth_m": 0.20, "target_fc_ratio": 1.05, "kc": 1.15, "notes": "Shallow 20 cm roots; high evaporation & water demand."},
+        "Wheat": {"root_depth_m": 0.35, "target_fc_ratio": 0.80, "kc": 0.90, "notes": "35 cm root zone; moderate moisture, avoid waterlogging."},
+        "Maize (Corn)": {"root_depth_m": 0.35, "target_fc_ratio": 0.82, "kc": 0.95, "notes": "35 cm root zone; sensitive to dry spells during flowering."},
+        "Ragi (Finger Millet)": {"root_depth_m": 0.25, "target_fc_ratio": 0.70, "kc": 0.75, "notes": "Hardy millet; slow water loss, thrives in lower moisture."},
+        "Jowar (Sorghum)": {"root_depth_m": 0.30, "target_fc_ratio": 0.68, "kc": 0.72, "notes": "Drought-tolerant; low irrigation demand."},
+        "Bajra (Pearl Millet)": {"root_depth_m": 0.30, "target_fc_ratio": 0.65, "kc": 0.70, "notes": "Very low water need; ideal for dryland conditions."},
     },
     "🍅 Vegetables": {
-        "Tomato": {"root_depth_m": 0.25, "target_fc_ratio": 0.88, "notes": "25 cm roots; needs steady moisture to prevent fruit cracking."},
-        "Potato": {"root_depth_m": 0.20, "target_fc_ratio": 0.90, "notes": "Shallow 20 cm roots; requires consistent moisture for tuber growth."},
-        "Brinjal (Eggplant)": {"root_depth_m": 0.25, "target_fc_ratio": 0.85, "notes": "25 cm roots; responds well to regular drip irrigation."},
-        "Lady Finger (Bhindi)": {"root_depth_m": 0.25, "target_fc_ratio": 0.82, "notes": "25 cm roots; moderate-high moisture during pod formation."},
-        "Onion": {"root_depth_m": 0.15, "target_fc_ratio": 0.88, "notes": "Very shallow 15 cm roots; frequent light watering needed."},
-        "Chilli / Capsicum": {"root_depth_m": 0.20, "target_fc_ratio": 0.85, "notes": "20 cm roots; sensitive to both drought and excess water."},
-        "Cabbage / Cauliflower": {"root_depth_m": 0.20, "target_fc_ratio": 0.90, "notes": "Shallow 20 cm roots; high moisture needed for tight head formation."},
+        "Tomato": {"root_depth_m": 0.25, "target_fc_ratio": 0.88, "kc": 0.98, "notes": "25 cm roots; steady moisture prevents fruit cracking."},
+        "Potato": {"root_depth_m": 0.20, "target_fc_ratio": 0.90, "kc": 0.95, "notes": "Shallow 20 cm roots; consistent moisture needed for tubers."},
+        "Brinjal (Eggplant)": {"root_depth_m": 0.25, "target_fc_ratio": 0.85, "kc": 0.92, "notes": "25 cm roots; responds well to regular drip irrigation."},
+        "Lady Finger (Bhindi)": {"root_depth_m": 0.25, "target_fc_ratio": 0.82, "kc": 0.90, "notes": "25 cm roots; moderate-high moisture during pod formation."},
+        "Onion": {"root_depth_m": 0.15, "target_fc_ratio": 0.88, "kc": 0.85, "notes": "Very shallow 15 cm roots; dries fast, needs frequent watering."},
+        "Chilli / Capsicum": {"root_depth_m": 0.20, "target_fc_ratio": 0.85, "kc": 0.90, "notes": "20 cm roots; sensitive to both drought and excess water."},
+        "Cabbage / Cauliflower": {"root_depth_m": 0.20, "target_fc_ratio": 0.90, "kc": 0.95, "notes": "Shallow 20 cm roots; high moisture for tight head growth."},
     },
     "🫘 Pulses & Oilseeds": {
-        "Groundnut (Peanut)": {"root_depth_m": 0.30, "target_fc_ratio": 0.76, "notes": "30 cm roots; prefers well-drained sandy/loamy soil."},
-        "Tur / Arhar (Pigeon Pea)": {"root_depth_m": 0.40, "target_fc_ratio": 0.72, "notes": "Deep 40 cm taproot; low water requirement."},
-        "Chana (Chickpea)": {"root_depth_m": 0.35, "target_fc_ratio": 0.70, "notes": "35 cm roots; minimal irrigation needed."},
-        "Soybean": {"root_depth_m": 0.30, "target_fc_ratio": 0.78, "notes": "30 cm roots; moderate moisture during pod filling."},
-        "Sunflower": {"root_depth_m": 0.40, "target_fc_ratio": 0.75, "notes": "40 cm roots; drought-hardy with moderate water needs."},
+        "Groundnut (Peanut)": {"root_depth_m": 0.30, "target_fc_ratio": 0.76, "kc": 0.80, "notes": "30 cm roots; prefers well-drained sandy/loamy soil."},
+        "Tur / Arhar (Pigeon Pea)": {"root_depth_m": 0.40, "target_fc_ratio": 0.72, "kc": 0.75, "notes": "Deep 40 cm taproot; low water requirement."},
+        "Chana (Chickpea)": {"root_depth_m": 0.35, "target_fc_ratio": 0.70, "kc": 0.70, "notes": "35 cm roots; minimal irrigation needed."},
+        "Soybean": {"root_depth_m": 0.30, "target_fc_ratio": 0.78, "kc": 0.85, "notes": "30 cm roots; moderate moisture during pod filling."},
+        "Sunflower": {"root_depth_m": 0.40, "target_fc_ratio": 0.75, "kc": 0.82, "notes": "40 cm roots; drought-hardy with moderate water needs."},
     },
     "🌿 Cash & Commercial Crops": {
-        "Sugarcane": {"root_depth_m": 0.50, "target_fc_ratio": 0.88, "notes": "Deep 50 cm root zone; high water demand throughout growth."},
-        "Cotton": {"root_depth_m": 0.45, "target_fc_ratio": 0.78, "notes": "45 cm taproot; avoid over-watering during boll opening."},
-        "Turmeric / Ginger": {"root_depth_m": 0.25, "target_fc_ratio": 0.88, "notes": "25 cm rhizome zone; needs consistently moist, well-drained soil."},
+        "Sugarcane": {"root_depth_m": 0.50, "target_fc_ratio": 0.88, "kc": 1.12, "notes": "Deep 50 cm root zone; high daily transpiration."},
+        "Cotton": {"root_depth_m": 0.45, "target_fc_ratio": 0.78, "kc": 0.92, "notes": "45 cm taproot; avoid over-watering during boll opening."},
+        "Turmeric / Ginger": {"root_depth_m": 0.25, "target_fc_ratio": 0.88, "kc": 0.95, "notes": "25 cm rhizome zone; needs consistently moist soil."},
     },
     "🌴 Fruits & Plantation": {
-        "Banana": {"root_depth_m": 0.35, "target_fc_ratio": 0.90, "notes": "35 cm roots; high continuous moisture requirement."},
-        "Coconut": {"root_depth_m": 0.65, "target_fc_ratio": 0.78, "notes": "Deep 65 cm root basin; steady moderate moisture."},
-        "Arecanut": {"root_depth_m": 0.55, "target_fc_ratio": 0.82, "notes": "55 cm root zone; sensitive to prolonged dry spells."},
-        "Mango": {"root_depth_m": 0.70, "target_fc_ratio": 0.72, "notes": "Deep 70 cm roots; low irrigation once established."},
-        "Coffee / Black Pepper": {"root_depth_m": 0.45, "target_fc_ratio": 0.82, "notes": "45 cm roots; prefers cool, evenly moist soil."},
+        "Banana": {"root_depth_m": 0.35, "target_fc_ratio": 0.90, "kc": 1.10, "notes": "35 cm roots; broad leaves cause high daily water loss."},
+        "Coconut": {"root_depth_m": 0.65, "target_fc_ratio": 0.78, "kc": 0.88, "notes": "Deep 65 cm root basin; steady moderate moisture."},
+        "Arecanut": {"root_depth_m": 0.55, "target_fc_ratio": 0.82, "kc": 0.92, "notes": "55 cm root zone; sensitive to prolonged dry spells."},
+        "Mango": {"root_depth_m": 0.70, "target_fc_ratio": 0.72, "kc": 0.78, "notes": "Deep 70 cm roots; low irrigation once established."},
+        "Coffee / Black Pepper": {"root_depth_m": 0.45, "target_fc_ratio": 0.82, "kc": 0.88, "notes": "45 cm roots; prefers cool, evenly moist soil."},
     },
 }
 
 
 # ---------------- HELPER FUNCTIONS ----------------
 def recommended_spot_count(length_m: float, width_m: float) -> int:
-    """
-    Scales checkpoint count smoothly with field area:
-    - 60x40m (0.24 ha)   -> 8 spots
-    - 250x250m (6.25 ha) -> 15 spots
-    - 500x500m (25 ha)   -> 24 spots
-    - >= 75 ha           -> capped at 35 spots
-    """
+    """Scales checkpoint count smoothly with field area (5 to 35 spots)."""
     hectares = (length_m * width_m) / 10000.0
     spots = int(round(6.5 + 3.4 * math.sqrt(hectares)))
     return max(5, min(35, spots))
@@ -199,6 +195,74 @@ def evaluate_weather_advice(wx: dict | None):
             f"🌤️ Clear & Mild Weather ({wx['temp_now']:.1f}°C, {rain_prob}% rain chance) — Normal Schedule",
             "Standard irrigation schedule applies based on measured soil moisture deficit."
         )
+
+
+def estimate_evapotranspiration_and_schedule(temp_c: float, rh: float, mean_moisture: float,
+                                           texture, crop_cfg: dict, wx_data: dict | None):
+    """
+    Calculates daily crop evapotranspiration (ETc in mm/day), soil moisture dry-down rate (%/day),
+    and estimates the exact Next Watering Day.
+    """
+    fc = getattr(texture, "field_capacity", 38.0)
+    wp = getattr(texture, "wilting_point", 18.0)
+    root_depth = crop_cfg["root_depth_m"]
+    kc = crop_cfg.get("kc", 0.90)
+    target_m = crop_cfg["target_fc_ratio"] * fc
+    warn_thresh = wp + 0.72 * max(1.0, (target_m - wp))
+
+    # Reference Evapotranspiration ET0 (mm/day) via temperature + Vapor Pressure Deficit (VPD)
+    t_eff = wx_data["temp_max"] * 0.6 + wx_data["temp_now"] * 0.4 if wx_data else temp_c
+    rh_eff = wx_data["rh_now"] if wx_data else rh
+    es = 0.6108 * math.exp((17.27 * t_eff) / (t_eff + 237.3))  # Saturation vapor pressure (kPa)
+    ea = es * (max(10.0, min(100.0, rh_eff)) / 100.0)
+    vpd = max(0.2, es - ea)
+
+    et0_mm = max(1.5, (0.14 * t_eff) + (1.35 * vpd) - 0.8)
+    etc_mm = et0_mm * kc  # Crop-specific water loss in mm/day
+
+    # Convert mm/day loss to volumetric soil moisture % drop per day
+    # 1 mm in D meters root depth = (0.1 / D)% volumetric moisture
+    daily_loss_pct = max(0.25, etc_mm / (root_depth * 10.0))
+
+    # Rain bonus in mm if forecast expects rain
+    rain_bonus_mm = wx_data["rain_mm"] if (wx_data and wx_data["rain_prob"] >= 35) else 0.0
+    rain_bonus_pct = rain_bonus_mm / (root_depth * 10.0)
+
+    # Current reserve above irrigation trigger threshold
+    reserve_pct = (mean_moisture + rain_bonus_pct) - warn_thresh
+    days_until_trigger = reserve_pct / daily_loss_pct
+
+    # Full cycle interval after watering back up to target moisture
+    cycle_days = max(1, int(round((target_m - warn_thresh) / daily_loss_pct)))
+
+    today = datetime.now()
+    if days_until_trigger <= 0.6:
+        if rain_bonus_mm >= 5.0:
+            headline = "Hold Today (Rain Expected)"
+            subtext = f"Next check in {cycle_days} days ({(today + timedelta(days=cycle_days)).strftime('%b %d')})"
+            report_line = f"Hold for Rain  |  Next cycle ~{cycle_days} days ({(today + timedelta(days=cycle_days)).strftime('%d %b')})"
+        else:
+            headline = "Water Today (Now)"
+            subtext = f"After watering, next cycle in {cycle_days} days ({(today + timedelta(days=cycle_days)).strftime('%b %d')})"
+            report_line = f"Water Today  |  Next cycle in {cycle_days} days ({(today + timedelta(days=cycle_days)).strftime('%d %b')})"
+    else:
+        wait_days = max(1, int(round(days_until_trigger)))
+        next_date = (today + timedelta(days=wait_days)).strftime("%b %d, %Y")
+        next_short = (today + timedelta(days=wait_days)).strftime("%d %b")
+        headline = f"In {wait_days} Day{'s' if wait_days > 1 else ''}"
+        subtext = f"Around {next_date} (Every ~{cycle_days} days)"
+        report_line = f"In {wait_days} Day{'s' if wait_days > 1 else ''} ({next_short})  |  Cycle: every {cycle_days}d"
+
+    return {
+        "et0_mm": et0_mm,
+        "etc_mm": etc_mm,
+        "daily_loss_pct": daily_loss_pct,
+        "vpd": vpd,
+        "cycle_days": cycle_days,
+        "headline": headline,
+        "subtext": subtext,
+        "report_line": report_line,
+    }
 
 
 def parse_bluetooth_log(raw_bytes: bytes, suggested_pts: np.ndarray, default_temp: float, default_rh: float):
@@ -351,8 +415,8 @@ def extract_zone_summary(moisture: np.ndarray, cell_area_m2: float, texture, cro
 
 
 def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, info, texture,
-                               crop_name, crop_cfg, wx_multiplier, wx_headline, pump_lpm, drip_lpm):
-    """Builds a high-resolution, executive-grade irrigation zoning map & pump/drip runtime report."""
+                               crop_name, crop_cfg, wx_multiplier, wx_headline, pump_lpm, drip_lpm, et_info):
+    """Builds a high-resolution, executive-grade irrigation zoning map, evaporation & runtime report."""
     cell_area = (xc[1] - xc[0]) * (yc[1] - yc[0]) if len(xc) > 1 and len(yc) > 1 else 1.0
     zone_rows, wp, fc, t1, t2, t3 = extract_zone_summary(moisture, cell_area, texture, crop_cfg, wx_multiplier)
     total_liters = sum(r["liters"] for r in zone_rows)
@@ -362,13 +426,13 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
     pump_time_str = format_runtime(total_liters, pump_lpm)
     drip_time_str = format_runtime(total_liters, drip_lpm)
 
-    fig = plt.figure(figsize=(15.5, 9.2), dpi=220)
+    fig = plt.figure(figsize=(15.5, 9.6), dpi=220)
     fig.patch.set_facecolor("#F8FAFC")
 
-    gs = fig.add_gridspec(2, 2, width_ratios=[1.62, 1.0], height_ratios=[0.95, 1.15],
-                          wspace=0.18, hspace=0.28, left=0.055, right=0.97, top=0.86, bottom=0.07)
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.60, 1.02], height_ratios=[0.88, 1.22],
+                          wspace=0.18, hspace=0.26, left=0.055, right=0.97, top=0.86, bottom=0.07)
 
-    fig.text(0.055, 0.948, "SOILSCOUT AI  |  PRECISION IRRIGATION & MOISTURE ZONING REPORT",
+    fig.text(0.055, 0.948, "SOILSCOUT AI  |  PRECISION IRRIGATION & EVAPORATION SCHEDULE REPORT",
              fontsize=15, fontweight="bold", color="#0F172A")
     fig.text(
         0.055, 0.918,
@@ -453,7 +517,7 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
     ax_bar.spines["left"].set_color("#CBD5E1")
     ax_bar.spines["bottom"].set_color("#CBD5E1")
 
-    # ---------------- BOTTOM RIGHT: IRRIGATION & PUMP/DRIP CARD ----------------
+    # ---------------- BOTTOM RIGHT: IRRIGATION, RUNTIME & NEXT WATERING ----------------
     ax_card = fig.add_subplot(gs[1, 1])
     ax_card.set_facecolor("#FFFFFF")
     ax_card.set_xticks([])
@@ -462,35 +526,47 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
         spine.set_edgecolor("#CBD5E1")
         spine.set_linewidth(1.5)
 
-    ax_card.text(0.05, 0.90, f"Irrigation Plan for {crop_name}",
-                 fontsize=11.5, fontweight="bold", color="#0F172A", transform=ax_card.transAxes)
+    ax_card.text(0.05, 0.92, f"Irrigation Plan & Schedule ({crop_name})",
+                 fontsize=11.2, fontweight="bold", color="#0F172A", transform=ax_card.transAxes)
 
-    y_pos = 0.76
+    y_pos = 0.80
     for r in zone_rows:
-        ax_card.scatter([0.07], [y_pos + 0.015], s=85, color=r["color"], transform=ax_card.transAxes)
+        ax_card.scatter([0.07], [y_pos + 0.012], s=80, color=r["color"], transform=ax_card.transAxes)
         ax_card.text(0.12, y_pos, f"{r['label']} ({r['area_m2']:,.0f} m²)",
-                     fontsize=9.2, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
+                     fontsize=9.0, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
         water_txt = f"{r['liters']:,.0f} L" if r["liters"] > 0 else "0 L (Skip)"
-        ax_card.text(0.95, y_pos, water_txt, fontsize=9.2, fontweight="bold",
+        ax_card.text(0.95, y_pos, water_txt, fontsize=9.0, fontweight="bold",
                      color="#0F172A", ha="right", transform=ax_card.transAxes)
-        y_pos -= 0.125
+        y_pos -= 0.105
 
-    ax_card.plot([0.05, 0.95], [0.26, 0.26], color="#E2E8F0", linewidth=1.2, transform=ax_card.transAxes)
+    ax_card.plot([0.05, 0.95], [0.38, 0.38], color="#E2E8F0", linewidth=1.2, transform=ax_card.transAxes)
 
-    ax_card.text(0.05, 0.18, f"TOTAL WATER ({equiv_mm:.1f} mm depth):",
-                 fontsize=9.0, fontweight="bold", color="#475569", transform=ax_card.transAxes)
-    ax_card.text(0.95, 0.18, f"{total_liters:,.0f} Liters",
-                 fontsize=10.5, fontweight="bold", color="#047857", ha="right", transform=ax_card.transAxes)
+    ax_card.text(0.05, 0.31, f"TOTAL WATER ({equiv_mm:.1f} mm):",
+                 fontsize=8.8, fontweight="bold", color="#475569", transform=ax_card.transAxes)
+    ax_card.text(0.95, 0.31, f"{total_liters:,.0f} Liters",
+                 fontsize=10.2, fontweight="bold", color="#047857", ha="right", transform=ax_card.transAxes)
 
-    ax_card.text(0.05, 0.10, f"⚡ Borewell Pump ({pump_lpm:.0f} L/min):",
-                 fontsize=9.2, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
-    ax_card.text(0.95, 0.10, pump_time_str,
-                 fontsize=9.5, fontweight="bold", color="#1D4ED8", ha="right", transform=ax_card.transAxes)
+    ax_card.text(0.05, 0.23, f"⚡ Borewell ({pump_lpm:.0f} L/min):",
+                 fontsize=8.8, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
+    ax_card.text(0.95, 0.23, pump_time_str,
+                 fontsize=9.2, fontweight="bold", color="#1D4ED8", ha="right", transform=ax_card.transAxes)
 
-    ax_card.text(0.05, 0.03, f"💧 Drip System ({drip_lpm:.0f} L/min):",
-                 fontsize=9.2, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
-    ax_card.text(0.95, 0.03, drip_time_str,
-                 fontsize=9.5, fontweight="bold", color="#0369A1", ha="right", transform=ax_card.transAxes)
+    ax_card.text(0.05, 0.16, f"💧 Drip ({drip_lpm:.0f} L/min):",
+                 fontsize=8.8, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
+    ax_card.text(0.95, 0.16, drip_time_str,
+                 fontsize=9.2, fontweight="bold", color="#0369A1", ha="right", transform=ax_card.transAxes)
+
+    ax_card.plot([0.05, 0.95], [0.12, 0.12], color="#E2E8F0", linewidth=1.2, transform=ax_card.transAxes)
+
+    ax_card.text(0.05, 0.065, "☀️ Evaporation Rate:",
+                 fontsize=8.8, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
+    ax_card.text(0.95, 0.065, f"{et_info['etc_mm']:.1f} mm/day (-{et_info['daily_loss_pct']:.1f}%/day)",
+                 fontsize=8.8, fontweight="bold", color="#B45309", ha="right", transform=ax_card.transAxes)
+
+    ax_card.text(0.05, 0.015, "📅 Next Watering:",
+                 fontsize=8.8, fontweight="bold", color="#1E293B", transform=ax_card.transAxes)
+    ax_card.text(0.95, 0.015, et_info["report_line"],
+                 fontsize=8.5, fontweight="bold", color="#0F766E", ha="right", transform=ax_card.transAxes)
 
     return fig, total_liters, equiv_mm, zone_rows, pump_time_str, drip_time_str
 
@@ -511,7 +587,6 @@ with st.sidebar:
         format_func=lambda k: sz.TEXTURES[k].label
     )
 
-    # Two-step cascading Indian crop dropdowns
     crop_category = st.selectbox("Crop Category", options=list(INDIAN_CROPS.keys()))
     crop_name = st.selectbox("Select Crop / Plant", options=list(INDIAN_CROPS[crop_category].keys()))
     crop_cfg = INDIAN_CROPS[crop_category][crop_name]
@@ -658,15 +733,15 @@ if st.session_state.samples:
         st.session_state.samples = []
         st.rerun()
 
-# ---------------- STEP 3: GENERATE PREMIUM AI MAP ----------------
+# ---------------- STEP 3: GENERATE PREMIUM AI MAP & SCHEDULE ----------------
 st.divider()
-st.subheader("Step 3: Precision AI Irrigation & Pump/Drip Runtime")
+st.subheader("Step 3: Precision AI Irrigation, Evaporation & Next Watering Schedule")
 
 if len(st.session_state.samples) < 3:
     st.info("Record or upload at least **3 samples** to generate the irrigation zoning map.")
 else:
-    if st.button("🗺️ Generate Precision Zoning & Runtime Report", type="primary", use_container_width=True):
-        with st.spinner("Running High-Resolution Spatial AI & Crop Water Calculation..."):
+    if st.button("🗺️ Generate Precision Zoning & Schedule Report", type="primary", use_container_width=True):
+        with st.spinner("Running Spatial AI, Evapotranspiration & Schedule Calculation..."):
             clean_samples = sz.sanitize_samples(st.session_state.samples, field)
             model = sz.HybridMoistureModel(field, model="auto").fit(clean_samples)
 
@@ -685,11 +760,16 @@ else:
                 "vigor": float(vigor.mean()),
             }
 
-            fig, total_liters, equiv_mm, zone_rows, pump_str, drip_str = draw_premium_zoning_report(
-                length, width, xc, yc, moisture, clean_samples, info, texture,
-                crop_name, crop_cfg, wx_mult, wx_title, pump_lpm, drip_lpm
+            et_info = estimate_evapotranspiration_and_schedule(
+                info["temp"], info["rh"], info["mean_moisture"], texture, crop_cfg, wx_data
             )
 
+            fig, total_liters, equiv_mm, zone_rows, pump_str, drip_str = draw_premium_zoning_report(
+                length, width, xc, yc, moisture, clean_samples, info, texture,
+                crop_name, crop_cfg, wx_mult, wx_title, pump_lpm, drip_lpm, et_info
+            )
+
+            # Row 1: Moisture, Water Volume & Equipment Runtime
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Avg Soil Moisture", f"{info['mean_moisture']:.1f}%",
                       f"Range: {info['min_moisture']:.0f}% – {info['max_moisture']:.0f}%")
@@ -698,10 +778,18 @@ else:
             k3.metric(f"⚡ Borewell ({pump_lpm:.0f} L/m)", pump_str, "Direct pump runtime")
             k4.metric(f"💧 Drip ({drip_lpm:.0f} L/m)", drip_str, "Drip valve runtime")
 
+            # Row 2: Evaporation Rate & Next Watering Day Estimator
+            e1, e2, e3 = st.columns(3)
+            e1.metric("☀️ Crop Evaporation (ETc)", f"{et_info['etc_mm']:.1f} mm / day",
+                      f"Ref ET₀: {et_info['et0_mm']:.1f} mm/day | VPD: {et_info['vpd']:.2f} kPa")
+            e2.metric("📉 Soil Dry-Down Rate", f"-{et_info['daily_loss_pct']:.1f}% / day",
+                      f"Across {int(crop_cfg['root_depth_m']*100)} cm root depth")
+            e3.metric("📅 Next Watering Day", et_info["headline"], et_info["subtext"])
+
             st.pyplot(fig, use_container_width=True)
 
             buf = io.BytesIO()
             fig.savefig(buf, format="png", dpi=260)
             plt.close(fig)
-            st.download_button("📥 Download Irrigation & Runtime Report (PNG)", buf.getvalue(),
+            st.download_button("📥 Download Full Irrigation & Schedule Report (PNG)", buf.getvalue(),
                                file_name="soilscout_precision_report.png", mime="image/png", use_container_width=True)
