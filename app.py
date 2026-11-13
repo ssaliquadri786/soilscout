@@ -417,5 +417,5 @@ else:
 
             buf = io.BytesIO()
             fig.savefig(buf, format="png", dpi=260)
-            st.download_button("📥 Download High-Res Irrigation Report (PNG)", buf.getvalue(),
+            st.download_button("📥 Download Irrigation Report (PNG)", buf.getvalue(),
                                file_name="soilscout_precision_report.png", mime="image/png", use_container_width=True)
