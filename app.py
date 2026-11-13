@@ -7,7 +7,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.patches import FancyBboxPatch
 
 import soil_zoning as sz
 
@@ -27,14 +26,14 @@ def recommended_spot_count(length_m: float, width_m: float) -> int:
     return max(5, min(30, spots))
 
 
-def draw_walking_map(field: sz.FieldSpec, points: np.ndarray):
+def draw_walking_map(length_m: float, width_m: float, points: np.ndarray):
     """Generates a clean visual checkpoint & zig-zag route map."""
     fig, ax = plt.subplots(figsize=(9, 5.8), dpi=180)
     fig.patch.set_facecolor("#F8FAFC")
     ax.set_facecolor("#F1F8F4")
 
     rect = plt.Rectangle(
-        (0, 0), field.length_m, field.width_m,
+        (0, 0), length_m, width_m,
         fill=True, facecolor="#E6F4EA", edgecolor="#1B4332", linewidth=2.5, zorder=1
     )
     ax.add_patch(rect)
@@ -55,17 +54,17 @@ def draw_walking_map(field: sz.FieldSpec, points: np.ndarray):
                 ha="center", va="center", zorder=5)
 
     ax.scatter([0], [0], s=200, marker="s", color="#DC2626", edgecolors="white", linewidth=1.5, zorder=6)
-    ax.text(field.length_m * 0.015, -field.width_m * 0.065, "🚩 START CORNER (0, 0)",
+    ax.text(length_m * 0.015, -width_m * 0.065, "🚩 START CORNER (0, 0)",
             color="#DC2626", fontsize=9.5, fontweight="bold")
 
-    pad_x = field.length_m * 0.06
-    pad_y = field.width_m * 0.09
-    ax.set_xlim(-pad_x, field.length_m + pad_x)
-    ax.set_ylim(-pad_y, field.width_m + pad_y)
+    pad_x = length_m * 0.06
+    pad_y = width_m * 0.09
+    ax.set_xlim(-pad_x, length_m + pad_x)
+    ax.set_ylim(-pad_y, width_m + pad_y)
     ax.set_xlabel("Field Length X (meters)", fontsize=10, fontweight="bold", color="#1E293B")
     ax.set_ylabel("Field Width Y (meters)", fontsize=10, fontweight="bold", color="#1E293B")
     ax.set_title(
-        f"Field Sampling Guide  •  {field.length_m:.0f}m × {field.width_m:.0f}m  ({len(points)} Checkpoints)",
+        f"Field Sampling Guide  •  {length_m:.0f}m × {width_m:.0f}m  ({len(points)} Checkpoints)",
         fontsize=12.5, fontweight="bold", color="#0F172A", pad=12
     )
     for spine in ["top", "right"]:
@@ -79,7 +78,6 @@ def extract_zone_summary(zones: np.ndarray, moisture: np.ndarray, stats, cell_ar
     fc = getattr(texture, "field_capacity", 38.0)
     wp = getattr(texture, "wilting_point", 18.0)
 
-    # Default 4 agronomic tiers based on moisture thresholds
     tiers = [
         ("Critical Dry", "#DC2626", moisture < (wp + 0.25 * (fc - wp))),
         ("Needs Water", "#F59E0B", (moisture >= (wp + 0.25 * (fc - wp))) & (moisture < (wp + 0.60 * (fc - wp)))),
@@ -94,7 +92,6 @@ def extract_zone_summary(zones: np.ndarray, moisture: np.ndarray, stats, cell_ar
         pct_area = 100.0 * count / total_cells
         area_m2 = count * cell_area_m2
         avg_m = float(np.mean(moisture[mask])) if count > 0 else 0.0
-        # Water needed to bring dry zones up to 85% of field capacity over 0.30m root depth
         target_m = 0.85 * fc
         deficit_pct = max(0.0, target_m - avg_m) if count > 0 else 0.0
         liters = area_m2 * 0.30 * (deficit_pct / 100.0) * 1000.0 / 0.85
@@ -109,7 +106,7 @@ def extract_zone_summary(zones: np.ndarray, moisture: np.ndarray, stats, cell_ar
     return summary, wp, fc
 
 
-def draw_premium_zoning_report(field, xc, yc, moisture, vigor, zones, stats, samples, info, texture):
+def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, vigor, zones, stats, samples, info, texture):
     """Builds a high-resolution, executive-grade irrigation zoning map & analytics card."""
     cell_area = (xc[1] - xc[0]) * (yc[1] - yc[0]) if len(xc) > 1 and len(yc) > 1 else 1.0
     zone_rows, wp, fc = extract_zone_summary(zones, moisture, stats, cell_area, texture)
@@ -121,12 +118,11 @@ def draw_premium_zoning_report(field, xc, yc, moisture, vigor, zones, stats, sam
     gs = fig.add_gridspec(2, 2, width_ratios=[1.65, 1.0], height_ratios=[1.05, 1.0],
                           wspace=0.18, hspace=0.28, left=0.055, right=0.97, top=0.88, bottom=0.08)
 
-    # Top Banner Header
     fig.text(0.055, 0.945, "SOILSCOUT AI  |  PRECISION IRRIGATION & MOISTURE ZONING MAP",
              fontsize=15, fontweight="bold", color="#0F172A")
     fig.text(
         0.055, 0.915,
-        f"Field: {field.length_m:.0f}m × {field.width_m:.0f}m ({(field.length_m*field.width_m)/10000:.2f} ha)   •   "
+        f"Field: {length_m:.0f}m × {width_m:.0f}m ({(length_m * width_m)/10000:.2f} ha)   •   "
         f"Soil: {texture.label}   •   Ambient: {info['temp']:.1f}°C, {info['rh']:.0f}% RH   •   "
         f"Samples: {info['n']}",
         fontsize=10.5, color="#475569"
@@ -136,7 +132,6 @@ def draw_premium_zoning_report(field, xc, yc, moisture, vigor, zones, stats, sam
     ax_map = fig.add_subplot(gs[:, 0])
     ax_map.set_facecolor("#FFFFFF")
 
-    # Refined agronomic colormap: Terracotta Red -> Warm Amber -> Lush Emerald -> Deep Sky Blue
     cmap = LinearSegmentedColormap.from_list(
         "soil_premium",
         ["#B91C1C", "#EF4444", "#F59E0B", "#84CC16", "#10B981", "#0EA5E9", "#1D4ED8"],
@@ -149,7 +144,6 @@ def draw_premium_zoning_report(field, xc, yc, moisture, vigor, zones, stats, sam
 
     cf = ax_map.contourf(xc, yc, moisture, levels=levels, cmap=cmap, extend="both", antialiased=True)
 
-    # Crisp management zone boundary lines
     t1 = wp + 0.25 * (fc - wp)
     t2 = wp + 0.60 * (fc - wp)
     t3 = fc + 4.0
@@ -159,13 +153,11 @@ def draw_premium_zoning_report(field, xc, yc, moisture, vigor, zones, stats, sam
                             linewidths=1.4, linestyles="--", alpha=0.75)
         ax_map.clabel(cs, inline=True, fontsize=8, fmt="%.0f%%")
 
-    # Subtle grid & border
     ax_map.grid(True, linestyle=":", alpha=0.35, color="#0F172A")
     for spine in ax_map.spines.values():
         spine.set_edgecolor("#CBD5E1")
         spine.set_linewidth(1.5)
 
-    # Plot Sampled Checkpoints with clean badges
     for i, s in enumerate(samples):
         ax_map.scatter([s.x], [s.y], s=110, color="#0F172A", edgecolors="white", linewidth=1.8, zorder=6)
         ax_map.annotate(
@@ -176,8 +168,8 @@ def draw_premium_zoning_report(field, xc, yc, moisture, vigor, zones, stats, sam
             zorder=7
         )
 
-    ax_map.set_xlim(0, field.length_m)
-    ax_map.set_ylim(0, field.width_m)
+    ax_map.set_xlim(0, length_m)
+    ax_map.set_ylim(0, width_m)
     ax_map.set_xlabel("Field Length X (meters)", fontsize=10.5, fontweight="bold", color="#1E293B", labelpad=8)
     ax_map.set_ylabel("Field Width Y (meters)", fontsize=10.5, fontweight="bold", color="#1E293B", labelpad=8)
     ax_map.set_title("Spatial Soil Moisture Distribution & Zone Boundaries",
@@ -292,7 +284,7 @@ st.subheader("Step 1: Field Walking Map & Checkpoints")
 map_col, table_col = st.columns([1.45, 1])
 
 with map_col:
-    walk_fig = draw_walking_map(field, suggested)
+    walk_fig = draw_walking_map(length, width, suggested)
     st.pyplot(walk_fig, use_container_width=True)
     walk_buf = io.BytesIO()
     walk_fig.savefig(walk_buf, format="png", dpi=200)
@@ -386,7 +378,6 @@ else:
             model = sz.HybridMoistureModel(field, model="auto").fit(clean_samples)
             loo = model.loo_cv()
 
-            # Higher grid resolution (280x280) for ultra-smooth contours
             xc, yc, dx, dy = field.make_grid(280)
             XX, YY = np.meshgrid(xc, yc)
             pred = model.predict(np.column_stack([XX.ravel(), YY.ravel()]))
@@ -411,10 +402,9 @@ else:
             }
 
             fig, total_liters, zone_rows = draw_premium_zoning_report(
-                field, xc, yc, moisture, vigor, zones, stats, clean_samples, info, texture
+                length, width, xc, yc, moisture, vigor, zones, stats, clean_samples, info, texture
             )
 
-            # Top KPI Metrics Strip
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Avg Soil Moisture", f"{info['mean_moisture']:.1f}%",
                       f"Range: {info['min_moisture']:.0f}% – {info['max_moisture']:.0f}%")
