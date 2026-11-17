@@ -291,7 +291,6 @@ def auto_save_samples(samples_list: list, source_tag: str, crop_name: str):
     safe_crop = re.sub(r"[^a-zA-Z0-9]+", "_", crop_name).strip("_")
     base_name = f"soilscout_{safe_crop}_{ts}"
 
-    # Write local backup files automatically (works locally & in writable cloud temp/workspace)
     try:
         os.makedirs("saved_field_logs", exist_ok=True)
         with open(os.path.join("saved_field_logs", f"{base_name}.csv"), "w", encoding="utf-8") as f_csv:
@@ -535,11 +534,43 @@ def parse_bluetooth_log(raw_input: bytes | str, suggested_pts: np.ndarray, defau
         if any(word in lower for word in ["moisture", "connect", "disconnect", "pong", "ok,", "err,", "bluetooth", "terminal"]):
             continue
 
+        idx = len(samples)
+
+        # Native Arduino $SOIL packet: $SOIL,seq,raw,raw_avg,moisture_pct,temp_c,rh,dht_ok*checksum
+        if "$soil" in lower:
+            soil_part = cleaned[lower.find("$soil"):]
+            soil_part = soil_part.split("*")[0]
+            parts = [p.strip() for p in soil_part.split(",")]
+            if len(parts) >= 5:
+                try:
+                    moist = float(parts[4])
+                except ValueError:
+                    continue
+                try:
+                    t_c = float(parts[5]) if len(parts) > 5 and parts[5].lower() != "nan" else default_temp
+                    if math.isnan(t_c):
+                        t_c = default_temp
+                except ValueError:
+                    t_c = default_temp
+                try:
+                    rh = float(parts[6]) if len(parts) > 6 and parts[6].lower() != "nan" else default_rh
+                    if math.isnan(rh):
+                        rh = default_rh
+                except ValueError:
+                    rh = default_rh
+
+                spot_idx = max(0, min(len(suggested_pts) - 1, idx))
+                px, py = float(suggested_pts[spot_idx][0]), float(suggested_pts[spot_idx][1])
+                moist = max(0.0, min(100.0, moist))
+                t_c = max(-10.0, min(65.0, t_c))
+                rh = max(0.0, min(100.0, rh))
+                samples.append(sz.Sample(x=px, y=py, moisture=moist, temp_c=t_c, rh=rh, source="csv"))
+            continue
+
         nums = [float(x) for x in num_pattern.findall(cleaned)]
         if len(nums) < 1:
             continue
 
-        idx = len(samples)
         if len(nums) >= 5:
             px, py, moist, t_c, rh = nums[0], nums[1], nums[2], nums[3], nums[4]
         elif len(nums) == 4:
@@ -735,17 +766,30 @@ def draw_premium_zoning_report(length_m, width_m, xc, yc, moisture, samples, inf
 
     vmin = max(0.0, min(float(moisture.min()) - 2.0, wp - 3.0))
     vmax = min(100.0, max(float(moisture.max()) + 2.0, fc + 8.0))
-    levels = np.linspace(vmin, vmax, 36)
+    if vmax - vmin < 1.0:
+        vmax = min(100.0, vmin + 40.0)
 
-    cf = ax_map.contourf(xc, yc, moisture, levels=levels, cmap=cmap, extend="both", antialiased=True)
+    # Use imshow with fixed vmin/vmax so flat 0.0% dry grids always render in red (#B91C1C)
+    cf = ax_map.imshow(
+        moisture,
+        extent=[0, length_m, 0, width_m],
+        origin="lower",
+        aspect="auto",
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        interpolation="bilinear",
+        zorder=1,
+    )
 
-    valid_bounds = [b for b in [t1, t2, t3] if vmin < b < vmax]
-    if valid_bounds:
-        cs = ax_map.contour(xc, yc, moisture, levels=valid_bounds, colors="#0F172A",
-                            linewidths=1.8, linestyles="--", alpha=0.85)
-        ax_map.clabel(cs, inline=True, fontsize=8.5, fmt="%.0f%%")
+    if float(np.ptp(moisture)) > 0.5:
+        valid_bounds = [b for b in [t1, t2, t3] if float(moisture.min()) < b < float(moisture.max())]
+        if valid_bounds:
+            cs = ax_map.contour(xc, yc, moisture, levels=valid_bounds, colors="#0F172A",
+                                linewidths=1.8, linestyles="--", alpha=0.85, zorder=2)
+            ax_map.clabel(cs, inline=True, fontsize=8.5, fmt="%.0f%%")
 
-    ax_map.grid(True, linestyle=":", alpha=0.35, color="#0F172A")
+    ax_map.grid(True, linestyle=":", alpha=0.35, color="#0F172A", zorder=3)
     for spine in ax_map.spines.values():
         spine.set_edgecolor("#CBD5E1")
         spine.set_linewidth(1.5)
@@ -1058,7 +1102,7 @@ with tab_paste:
     pasted_text = st.text_area(
         "Paste copied Bluetooth log here:",
         height=130,
-        placeholder="Example:\n10:14:02 Connected to HC-05\n10:14:15 1,24.5,31.2,48.0\n10:15:02 2,36.8,31.0,49.0\n10:15:48 3,41.2,30.8,50.0"
+        placeholder="Example:\n$SOIL,0,1020,1020.0,0.0,28.2,45.3,1*0E\n$SOIL,1,680,680.0,36.8,28.1,46.0,1*0A\n$SOIL,2,610,610.0,44.2,28.0,46.5,1*0F"
     )
     if pasted_text.strip():
         parsed_paste = parse_bluetooth_log(pasted_text, suggested, def_t, def_h)
@@ -1190,5 +1234,5 @@ else:
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=260)
         plt.close(fig)
-        st.download_button("📥 Download Full Zone-by-Zone & Savings Report (PNG)", buf.getvalue(),
+        st.download_button("📥 Download Full Zone-by-Zone & Savings Report", buf.getvalue(),
                            file_name="soilscout_precision_report.png", mime="image/png", use_container_width=True)
